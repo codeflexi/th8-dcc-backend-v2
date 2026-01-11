@@ -3,6 +3,14 @@ policy_name: Procurement Exception Control
 version: v3.1
 effective_date: 2026-01-01
 
+# ==========================================
+# ✅ [NEW] System Configuration
+# ค่าคงที่สำหรับ Application Logic (Safety Net)
+# ==========================================
+config:
+  high_risk_threshold: 200000  # ถ้ายอดเกินนี้ บังคับเป็น HIGH Risk ทันที
+  force_risk_level: HIGH       # ค่า Risk ที่จะบังคับใช้
+
 scope:
   decision_type: PROCUREMENT
   applies_to:
@@ -105,4 +113,5 @@ override:
   override_requires_reason: true
 
 audit:
-  log_level: FULL
+  log_level: INFO
+  retention_days: 90

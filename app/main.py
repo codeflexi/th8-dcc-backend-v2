@@ -49,8 +49,7 @@ def create_app() -> FastAPI:
         try:
             case_repo = SupabaseCaseRepository()
 
-            # Seed demo data (idempotent)
-            seed_demo_data()
+        
 
             cases = case_repo.list_cases() or []
 
