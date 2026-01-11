@@ -1,0 +1,40 @@
+policy_id: CREDIT-001
+policy_name: Credit Term Control
+version: v1
+effective_date: 2025-01-01
+
+scope:
+  decision_type: CREDIT
+  applies_to:
+    - customer_credit
+
+thresholds:
+  max_credit_days: 60
+  max_outstanding_amount: 10000000
+
+authority:
+  rules:
+    - condition: credit_days > 60
+      required_role: CFO
+    - condition: outstanding_amount > 10000000
+      required_role: CFO
+    - condition: credit_days <= 60
+      required_role: Finance_Manager
+
+rules:
+  - id: CREDIT_TERM_EXCEEDED
+    description: "Credit term exceeds policy"
+    when:
+      - field: credit_days
+        operator: ">"
+        value: 60
+    then:
+      decision: ESCALATE
+
+override:
+  allow_manual_override: true
+  override_requires_reason: true
+
+audit:
+  log_level: FULL
+  retain_years: 7

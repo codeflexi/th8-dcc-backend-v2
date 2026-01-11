@@ -1,0 +1,15 @@
+[project]
+name = "th8-decision-platform-backend"
+version = "0.1.0"
+description = "TH8 Decision Platform demo backend (FastAPI)"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "pydantic-settings",
+  "python-dotenv",
+]
+
+[project.scripts]
+th8-backend = "app.main:app"

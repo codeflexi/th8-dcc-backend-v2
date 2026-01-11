@@ -1,0 +1,37 @@
+policy_id: PRICING-001
+policy_name: Pricing Discount Control
+version: v1
+effective_date: 2025-01-01
+
+scope:
+  decision_type: PRICING
+  applies_to:
+    - trade_discount
+    - promotion
+
+thresholds:
+  max_discount_percent: 8
+
+authority:
+  rules:
+    - condition: discount_percent > 8
+      required_role: CFO
+    - condition: discount_percent <= 8
+      required_role: Sales_Director
+
+rules:
+  - id: DISCOUNT_EXCEED_POLICY
+    description: "Discount exceeds allowed threshold"
+    when:
+      - field: discount_percent
+        operator: ">"
+        value: 8
+    then:
+      decision: ESCALATE
+
+override:
+  allow_manual_override: false
+
+audit:
+  log_level: FULL
+  retain_years: 7

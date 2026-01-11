@@ -1,0 +1,22 @@
+[
+  {
+    "doc_id": "DOC-CONTRACT-OVT-2024",
+    "name": "contract_ovaltine_raw_2024.pdf",
+    "doc_type": "contract",
+    "vendor": "Thai Packaging Solutions Co., Ltd.",
+    "effective_from": "2024-01-01",
+    "effective_to": "2024-12-31",
+    "status": "Active",
+    "pages": 12,
+    "tags": ["ovaltine", "raw", "packaging"]
+  },
+  {
+    "doc_id": "DOC-INVOICE-OVT-2025-017",
+    "name": "invoice_ovt_2025_017.pdf",
+    "doc_type": "invoice",
+    "vendor": "Thai Packaging Solutions Co., Ltd.",
+    "status": "Active",
+    "pages": 1,
+    "tags": ["invoice", "payment"]
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "case_id": "CASE-OVT-INV-2025-017",
+    "external_id": "INV-OVT-2025-017",
+    "severity": "High",
+    "amount_total": 218000,
+    "currency": "THB",
+    "created_at": "2025-01-11T10:25:00Z",
+    "sla_hours": 8,
+    "within_sla": true,
+    "auto_pass": false,
+    "violations": [
+      {
+        "rule_id": "I-02",
+        "severity": "High",
+        "title": "Invoice exceeds PO",
+        "delta_amount": 18000,
+        "pending_reason": "Invoice ยอดสูงกว่า PO จำนวน ฿18,000 (ควรอนุมัติแบบมีเหตุผล/ให้แก้ไขเอกสาร)",
+        "evidence": {
+          "doc_id": "DOC-INVOICE-OVT-2025-017",
+          "doc_name": "invoice_ovt_2025_017.pdf",
+          "page": 1,
+          "snippet": "Total ฿218,000 vs PO ฿200,000",
+          "url": "/docs/invoice_ovt_2025_017.pdf#page=1"
+        }
+      }
+    ]
+  }
+]

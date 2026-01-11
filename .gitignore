@@ -1,0 +1,43 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environments ---
+# เก็บไลบรารี ไม่ควรเอาขึ้น Git
+.venv
+.venv/
+venv/
+env/
+ENV/
+
+# --- Environment Variables (Security ⚠️) ---
+# ห้ามเอาไฟล์ที่มี API Key หรือ Database URL ขึ้นเด็ดขาด
+.env
+.env.local
+.env.*.local
+
+# --- IDE & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Operating System ---
+.DS_Store
+Thumbs.db
+
+# --- Testing & Coverage ---
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# --- Distribution / Packaging ---
+dist/
+build/
+*.egg-info/
+
+# --- Logs ---
+*.log
+logs/

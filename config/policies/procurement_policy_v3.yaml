@@ -1,0 +1,24 @@
+policy_id: PROCUREMENT_POLICY
+version: v3
+description: Procurement approval and risk policy
+
+thresholds:
+  amount:
+    high: 200000
+
+sla:
+  escalate_if_hours_below: 24
+
+clauses:
+  no_advance_payment:
+    clause_id: C-7.2
+    description: Advance payment is not allowed
+
+decision_matrix:
+  - when:
+      amount_gt: 200000
+      sla_lt: 24
+      clause: no_advance_payment
+    then:
+      decision: ESCALATE
+      required_role: admin

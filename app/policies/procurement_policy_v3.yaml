@@ -1,0 +1,108 @@
+policy_id: PROCUREMENT-001
+policy_name: Procurement Exception Control
+version: v3.1
+effective_date: 2026-01-01
+
+scope:
+  decision_type: PROCUREMENT
+  applies_to:
+    - raw_material
+    - packaging
+    - indirect
+
+thresholds:
+  amount:
+    medium: 200000
+    high: 500000
+
+sla:
+  approval_due_hours: 24
+
+authority:
+  rules:
+    - condition: amount > 1000000
+      required_role: CFO
+    - condition: amount > 200000
+      required_role: COO
+    - condition: amount <= 200000
+      required_role: Procurement_Manager
+
+rules:
+  # --- 1. กฎเดิม (ยอดเงินสูง) ---
+  - id: HIGH_AMOUNT_ESCALATION
+    description: "High value procurement (>200k) must be escalated"
+    when:
+      - field: amount
+        operator: ">"
+        value: 200000
+    then:
+      decision: ESCALATE
+
+  # --- 2. กฎความเสี่ยง SLA ---
+  - id: SLA_RISK
+    description: "Urgent procurement (close to SLA deadline)"
+    when:
+      - field: hours_to_sla
+        operator: "<"
+        value: 24
+    then:
+      decision: REVIEW
+
+  # --- 3. กฎคู่ค้า (Vendor Risk) ---
+  - id: VENDOR_BLACKLIST_CHECK
+    description: "Critical: Vendor is flagged as BLACKLISTED"
+    when:
+      - field: vendor_status
+        operator: "=="
+        value: "BLACKLISTED"
+    then:
+      decision: REJECT
+
+  - id: VENDOR_RATING_LOW
+    description: "Warning: Vendor performance rating is below standard (Score < 60)"
+    when:
+      - field: vendor_rating
+        operator: "<"
+        value: 60
+    then:
+      decision: REVIEW
+
+  # --- 4. กฎงบประมาณ (Budget Control) ---
+  - id: BUDGET_INSUFFICIENT
+    description: "Purchase amount exceeds remaining department budget"
+    when:
+      - field: budget_remaining
+        operator: "<"
+        value: 0
+    then:
+      decision: REJECT
+
+  # --- 5. กฎจับผิดซอยบิล (Split PO Fraud) ---
+  - id: POTENTIAL_SPLIT_PO
+    description: "Fraud Risk: Potential Split PO detected (Multiple orders < 24h)"
+    when:
+      - field: po_count_24h
+        operator: ">"
+        value: 1
+      - field: total_spend_24h
+        operator: ">"
+        value: 100000
+    then:
+      decision: ESCALATE
+
+  # --- 6. [NEW] กฎ AI Semantic Check (ใช้ LLM) ---
+  - id: VENDOR_CATEGORY_MISMATCH
+    type: llm_semantic_check
+    description: "Check if items match vendor business category"
+    inputs: 
+      - vendor_name
+      - line_items
+    then:
+      decision: REVIEW
+
+override:
+  allow_manual_override: true
+  override_requires_reason: true
+
+audit:
+  log_level: FULL

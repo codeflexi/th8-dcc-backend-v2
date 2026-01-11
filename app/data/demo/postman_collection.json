@@ -1,0 +1,35 @@
+{
+  "info": {
+    "name": "TH8 Demo – Phase 1",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/health"
+      }
+    },
+    {
+      "name": "Load Demo Data",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/demo/load"
+      }
+    },
+    {
+      "name": "List Cases",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/cases"
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    }
+  ]
+}
