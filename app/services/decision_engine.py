@@ -27,7 +27,7 @@ class Node:
 
 
 # ============================================================
-# Node 1 — Evaluate Rules
+# Node 1 — Evaluate Rules (Deterministic)
 # ============================================================
 
 class EvaluateRulesNode(Node):
@@ -42,6 +42,10 @@ class EvaluateRulesNode(Node):
         hit_rules: List[str] = []
 
         for rule in policy.get("rules", []):
+            # ข้าม rule ที่เป็น LLM semantic
+            if rule.get("type") == "llm_semantic_check":
+                continue
+
             rule_id = rule["id"]
             description = rule.get("description")
 
@@ -52,6 +56,9 @@ class EvaluateRulesNode(Node):
                 field = cond["field"]
                 operator = cond["operator"]
                 expected = cond["value"]
+
+                # ---- NORMALIZE FIELD ----
+                # policy ใช้ amount_total → ต้องมีใน inputs เสมอ
                 actual = inputs.get(field)
 
                 ok = _safe_compare(actual, operator, expected)
@@ -70,6 +77,7 @@ class EvaluateRulesNode(Node):
                 "rule_id": rule_id,
                 "description": description,
                 "hit": hit,
+                # matched ต้องเป็น evidence เฉพาะตอน hit เท่านั้น
                 "matched": matched if hit else [],
             })
 
@@ -82,7 +90,59 @@ class EvaluateRulesNode(Node):
 
 
 # ============================================================
-# Node 2 — Recommend Decision
+# Node 2 — Evaluate LLM Rules (Semantic)
+# ============================================================
+
+class EvaluateLLMNode(Node):
+    name = "evaluate_llm_rules"
+
+    @staticmethod
+    def run(ctx: DecisionContext) -> DecisionContext:
+        policy = ctx["policy"]
+        inputs = ctx["inputs"]
+
+        llm_rules = [r for r in policy.get("rules", []) if r.get("type") == "llm_semantic_check"]
+
+        for rule in llm_rules:
+            prompt = f"""
+            Analyze this procurement case:
+            Vendor: {inputs.get('vendor_name')}
+            Items: {inputs.get('line_items')}
+
+            Rule: {rule['description']}
+
+            Answer strictly in JSON: {{"violation": boolean, "reason": "string"}}
+            """
+
+            # TODO: replace with real LLM call
+            response = {"violation": False, "reason": "Items align with vendor nature"}
+
+            hit = bool(response.get("violation"))
+
+            # ---- SEMANTIC MATCHED (NOT DETERMINISTIC EVIDENCE) ----
+            semantic_matched = [{
+                "field": "llm_semantic_check",
+                "operator": "violation",
+                "expected": True,
+                "actual": hit
+            }]
+
+            ctx["rule_results"].append({
+                "rule_id": rule["id"],
+                "description": rule["description"],
+                "hit": hit,
+                "ai_reason": response.get("reason"),
+                "matched": semantic_matched,
+            })
+
+            if hit:
+                ctx["_hit_rules"].append(rule["id"])
+
+        return ctx
+
+
+# ============================================================
+# Node 3 — Recommend Decision
 # ============================================================
 
 class RecommendDecisionNode(Node):
@@ -107,47 +167,6 @@ class RecommendDecisionNode(Node):
 
         return ctx
 
-class EvaluateLLMNode(Node):
-    name = "evaluate_llm_rules"
-
-    @staticmethod
-    def run(ctx: DecisionContext) -> DecisionContext:
-        policy = ctx["policy"]
-        inputs = ctx["inputs"]
-        
-        # 1. หา Rule ที่เป็น type: llm_semantic_check
-        llm_rules = [r for r in policy.get("rules", []) if r.get("type") == "llm_semantic_check"]
-        
-        for rule in llm_rules:
-            # 2. เตรียม Prompt
-            prompt = f"""
-            Analyze this procurement case:
-            Vendor: {inputs.get('vendor_name')}
-            Items: {inputs.get('line_items')}
-            
-            Rule: {rule['description']}
-            
-            Answer strictly in JSON: {{"violation": boolean, "reason": "string"}}
-            """
-            
-            # 3. Call LLM Service (OpenAI / Local LLM)
-            # response = LLMService.complete(prompt)
-            # mock response for now:
-            response = {"violation": False, "reason": "Items align with vendor nature"}
-            
-            # 4. Append Result
-            ctx["rule_results"].append({
-                "rule_id": rule["id"],
-                "description": rule["description"],
-                "hit": response["violation"],
-                "ai_reason": response["reason"],
-                "matched": []  # <--- ✅ ใส่บรรทัดนี้เพิ่มเข้าไปครับ
-            })
-            
-            if response["violation"]:
-                ctx["_hit_rules"].append(rule["id"])
-                
-        return ctx
 
 # ============================================================
 # Decision Engine (Graph-ready)
@@ -162,6 +181,11 @@ class DecisionEngine:
 
     @classmethod
     def evaluate(cls, *, policy: Dict, inputs: Dict) -> Dict:
+        """
+        Contract:
+        - inputs ต้องมี field ที่ตรงกับ policy.when[].field
+          (เช่น amount_total, vendor_status, vendor_rating, ...)
+        """
         ctx: DecisionContext = {
             "policy": policy,
             "inputs": inputs,
@@ -206,11 +230,15 @@ def _safe_compare(actual: Any, operator: str, expected: Any) -> bool:
             return actual == expected
         if operator == "!=":
             return actual != expected
+        if operator == "in":
+            return actual in expected
+        if operator == "not_in":
+            return actual not in expected
+        if operator == "contains":
+            return expected in actual
     except TypeError:
-        # type mismatch → rule not applicable
         return False
 
-    # unknown operator → rule not applicable
     return False
 
 
