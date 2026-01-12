@@ -13,7 +13,7 @@ from app.schemas.portfolio import CasePortfolioItem
 from app.schemas.decision import DecisionSummary
 from app.services.audit_service import AuditService
 
-# ✅ Import Decision Logic & Loader
+# Decision Logic
 from app.api.decisions import execute_decision_run, load_policy_yaml
 
 router = APIRouter(tags=["cases"])
@@ -39,57 +39,17 @@ class PaginatedCaseResponse(BaseModel):
     pages: int
 
 # =================================================
-# ✅ Helper Function: Dynamic Risk Logic (Single Source of Truth)
+# ✅ Single Source of Truth — Risk Read Model
 # =================================================
-def get_policy_threshold() -> float:
-    """
-    ดึงค่า High Risk Threshold จาก YAML ไฟล์จริง
-    เพื่อให้ config ตรงกันทั้งระบบ (Single Source of Truth)
-    """
-    try:
-        # โหลด Policy หลัก (Default)
-        policy = load_policy_yaml("PROCUREMENT-001", "v3.1")
-        config = policy.get("config", {})
-        return float(config.get("high_risk_threshold", 200000))
-    except Exception:
-        # กรณีฉุกเฉินจริงๆ หาไฟล์ไม่เจอ ให้ใช้ Default เก่า
-        return 200000.0
-
 def determine_risk_display(payload: Dict) -> str:
     """
-    Determine risk level for display (Read-Model).
+    Read-model for risk.
+    Source of truth = payload.risk_level (written by decision engine)
     """
-    db_risk = payload.get("risk_level", "LOW")
-    
-    # 1. Trust DB first if already High
-    if db_risk == "HIGH":
-        return "HIGH"
-    
-    # 2. Check Priority Score
-    score = payload.get("priority_score", 0)
-    if score >= 80:
-        return "HIGH"
-    
-    # 3. Safety Net: Check Amount vs YAML Configured Threshold
-    try:
-        raw_amt = payload.get("amount_total") or payload.get("amount") or 0
-        if isinstance(raw_amt, str):
-            amt = float(raw_amt.replace(",", ""))
-        else:
-            amt = float(raw_amt)
-            
-        # ✅ เรียกใช้ค่าจาก YAML (Dynamic)
-        threshold = get_policy_threshold()
-        
-        if amt > threshold:
-            return "HIGH"
-    except Exception:
-        pass
-    
-    return db_risk
+    return payload.get("risk_level", "LOW")
 
 # =================================================
-# 1. GET Stats Endpoint
+# 1. GET Stats
 # =================================================
 @router.get("/stats", response_model=CaseStats)
 def get_case_stats(request: Request):
@@ -105,7 +65,7 @@ def get_case_stats(request: Request):
     for c in all_cases:
         payload = c.get("payload", {})
         
-        # Calculate Exposure
+        # ---- exposure ----
         try:
             raw_amt = payload.get("amount_total") or payload.get("amount") or 0
             if isinstance(raw_amt, str):
@@ -114,10 +74,11 @@ def get_case_stats(request: Request):
                 amt = float(raw_amt)
         except:
             amt = 0
+
         total_exposure += amt
         
-        # ✅ ใช้ Logic ที่ดึงค่าจาก YAML
-        if determine_risk_display(payload) == "HIGH":
+        # ---- risk ----
+        if determine_risk_display(payload) in ["HIGH", "CRITICAL"]:
             high_risk += 1
             
     return {
@@ -127,7 +88,7 @@ def get_case_stats(request: Request):
     }
 
 # =================================================
-# 2. GET List Endpoint
+# 2. GET List (FIXED FILTERS & SEARCH)
 # =================================================
 @router.get("", response_model=PaginatedCaseResponse)
 def list_cases(
@@ -145,28 +106,68 @@ def list_cases(
     all_rows = case_repo.list_cases()
     filtered = []
 
+    # ---------------------------------------------
+    # ✅ 1. Prepare Filter Inputs (Normalize)
+    # ---------------------------------------------
+    q_search = search.lower().strip() if search else None
+    q_risk = risk.upper() if risk and risk != "ALL" else None
+    q_status = status.upper() if status and status != "ALL" else None
+
     for r in all_rows:
         payload = r.get("payload", {})
         
-        # ✅ คำนวณ Risk เพื่อใช้ในการ Filter และ Display
-        p_risk = determine_risk_display(payload)
+        # -----------------------------------------
+        # ✅ 2. Normalize Data Values
+        # -----------------------------------------
+        # Risk
+        p_risk_val = determine_risk_display(payload)
+        p_risk_norm = str(p_risk_val).upper()
         
-        p_status = r.get("status", "OPEN")
-        p_id = r["case_id"].lower()
-        p_vendor = str(payload.get("vendor_name") or payload.get("vendor_id") or payload.get("vendor") or "").lower()
+        # Status
+        p_status_val = r.get("status", "OPEN")
+        p_status_norm = str(p_status_val).upper()
 
-        # Apply Filters
-        if risk and risk != "ALL" and p_risk != risk: continue
-        if status and status != "ALL" and p_status != status: continue
-        if search:
-            q = search.lower()
-            if q not in p_id and q not in p_vendor: continue
+        # Search Fields
+        p_id = r["case_id"].lower()
+        v_name = str(payload.get("vendor_name") or "").lower()
+        v_id = str(payload.get("vendor_id") or "").lower()
+        v_raw = str(payload.get("vendor") or "").lower()
+        p_po = str(payload.get("po_number") or "").lower()
+
+        # -----------------------------------------
+        # ✅ 3. Apply Filters
+        # -----------------------------------------
+        
+        # Filter: Risk
+        if q_risk and p_risk_norm != q_risk:
+            continue
+
+        # Filter: Status
+        if q_status and p_status_norm != q_status:
+            continue
+
+        # Filter: Search (Smart Search covers PO, ID, Vendor)
+        if q_search:
+            is_match = (
+                (q_search in p_id) or 
+                (q_search in v_name) or 
+                (q_search in v_id) or 
+                (q_search in v_raw) or
+                (q_search in p_po)
+            )
+            if not is_match:
+                continue
             
-        # Store computed risk in row object temporarily
-        r["_computed_risk"] = p_risk 
+        # Store computed risk for display
+        r["_computed_risk"] = p_risk_val 
         filtered.append(r)
 
-    # Paging Logic
+    # ---------------------------------------------------------
+    # Sort by Date DESC (Newest First) BEFORE Paging
+    # ---------------------------------------------------------
+    filtered.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    
+    # ---- paging ----
     total = len(filtered)
     start = (page - 1) * size
     end = start + size
@@ -182,6 +183,7 @@ def list_cases(
             payload.get("vendor") or 
             "Unknown Vendor"
         )
+
         amount_display = (
             payload.get("amount_total") or 
             payload.get("amount") or 
@@ -198,13 +200,14 @@ def list_cases(
                 pending_reason=payload.get("pending_reason"),
                 priority_score=payload.get("priority_score"),
                 priority_reason=payload.get("priority_reason"),
-                # ✅ ใช้ค่า Risk ที่คำนวณมาแล้ว
+                
+                # Use value from loop
                 risk_level=r.get("_computed_risk", "LOW"),
+
                 created_at=r.get("created_at"),
             )
         )
 
-    import math
     return {
         "items": items,
         "total": total,
@@ -213,18 +216,22 @@ def list_cases(
         "pages": math.ceil(total / size) if size > 0 else 1
     }
 
-# -------------------------
-# Case detail
-# -------------------------
+# =================================================
+# 3. GET Case Detail
+# =================================================
 @router.get("/{case_id}", response_model=CaseDetail)
 def get_case(case_id: str, request: Request):
     case_repo = getattr(request.app.state, "case_repo", None)
-    if not case_repo: raise HTTPException(status_code=500)
+    if not case_repo:
+        raise HTTPException(status_code=500)
+
     case = case_repo.get_case(case_id)
-    if not case: raise HTTPException(status_code=404)
+    if not case:
+        raise HTTPException(status_code=404)
+
     payload = case.get("payload", {})
     
-    # ✅ ใช้ Logic กลาง (อ่าน YAML)
+    # ---- risk ----
     risk = determine_risk_display(payload)
 
     vendor_display = payload.get("vendor_name") or payload.get("vendor_id") or payload.get("vendor")
@@ -235,8 +242,9 @@ def get_case(case_id: str, request: Request):
         decision_reason=payload.get("pending_reason"),
         violated_rules=[],
         risk_level=risk,
-        recommended_action="REVIEW",
+        recommended_action=payload.get("last_decision", "REVIEW"),
     )
+
     return CaseDetail(
         id=case["case_id"],
         domain=case.get("domain", "procurement"),
@@ -253,13 +261,14 @@ def get_case(case_id: str, request: Request):
         raw=case,
     )
 
-# -------------------------
-# Ingest
-# -------------------------
+# =================================================
+# 4. Ingest
+# =================================================
 @router.post("/ingest")
 def ingest_case(data: CaseIngestRequest, request: Request):
     case_repo = getattr(request.app.state, "case_repo", None)
-    if not case_repo: raise HTTPException(status_code=500)
+    if not case_repo:
+        raise HTTPException(status_code=500)
 
     if case_repo.get_case(data.case_id):
         AuditService.write("INGESTION_FAILED", {"case_id": data.case_id, "reason": "Duplicate"}, "SYSTEM")
@@ -268,7 +277,6 @@ def ingest_case(data: CaseIngestRequest, request: Request):
     now = datetime.utcnow().isoformat()
     payload_data = data.payload or {}
     
-    # Robust Extraction for Ingest Log
     vendor_display = payload_data.get("vendor_name") or payload_data.get("vendor_id") or "Unknown"
     amount_display = payload_data.get("amount_total") or payload_data.get("amount") or 0
     po_display = payload_data.get("po_number") or "-"
@@ -307,7 +315,7 @@ def ingest_case(data: CaseIngestRequest, request: Request):
         }
     )
 
-    # ✅ Auto-Run Decision (ไม่กระทบของเดิม เพราะอยู่ใน try-except)
+    # ---- auto run decision ----
     try:
         policy = load_policy_yaml(policy_id, policy_version)
         execute_decision_run(

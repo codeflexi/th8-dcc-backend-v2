@@ -14,5 +14,7 @@ class CasePortfolioItem(BaseModel):
 
     priority_score: Optional[int] = None   # 0–100
     priority_reason: Optional[str] = None
+     # 🔥 สำคัญ
+    risk_level: Optional[str] = "LOW"
 
     created_at: str

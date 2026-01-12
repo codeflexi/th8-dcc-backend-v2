@@ -4,12 +4,11 @@ version: v3.1
 effective_date: 2026-01-01
 
 # ==========================================
-# ✅ [NEW] System Configuration
-# ค่าคงที่สำหรับ Application Logic (Safety Net)
+# System Configuration
 # ==========================================
 config:
-  high_risk_threshold: 200000  # ถ้ายอดเกินนี้ บังคับเป็น HIGH Risk ทันที
-  force_risk_level: HIGH       # ค่า Risk ที่จะบังคับใช้
+  high_risk_threshold: 200000   # ถ้ายอดเกินนี้ บังคับเป็น HIGH Risk ทันที
+  force_risk_level: HIGH
 
 scope:
   decision_type: PROCUREMENT
@@ -18,6 +17,9 @@ scope:
     - packaging
     - indirect
 
+# ==========================================
+# Risk Thresholds (amount-based safety net)
+# ==========================================
 thresholds:
   amount:
     medium: 200000
@@ -26,6 +28,9 @@ thresholds:
 sla:
   approval_due_hours: 24
 
+# ==========================================
+# Authority Matrix
+# ==========================================
 authority:
   rules:
     - condition: amount > 1000000
@@ -35,10 +40,17 @@ authority:
     - condition: amount <= 200000
       required_role: Procurement_Manager
 
+# ==========================================
+# Decision Rules
+# ==========================================
 rules:
-  # --- 1. กฎเดิม (ยอดเงินสูง) ---
+
+  # -------------------------------------------------
+  # 1. High Amount Control
+  # -------------------------------------------------
   - id: HIGH_AMOUNT_ESCALATION
     description: "High value procurement (>200k) must be escalated"
+    risk_impact: HIGH
     when:
       - field: amount
         operator: ">"
@@ -46,9 +58,12 @@ rules:
     then:
       decision: ESCALATE
 
-  # --- 2. กฎความเสี่ยง SLA ---
+  # -------------------------------------------------
+  # 2. SLA Risk
+  # -------------------------------------------------
   - id: SLA_RISK
     description: "Urgent procurement (close to SLA deadline)"
+    risk_impact: MEDIUM
     when:
       - field: hours_to_sla
         operator: "<"
@@ -56,9 +71,12 @@ rules:
     then:
       decision: REVIEW
 
-  # --- 3. กฎคู่ค้า (Vendor Risk) ---
+  # -------------------------------------------------
+  # 3. Vendor Risk
+  # -------------------------------------------------
   - id: VENDOR_BLACKLIST_CHECK
     description: "Critical: Vendor is flagged as BLACKLISTED"
+    risk_impact: CRITICAL
     when:
       - field: vendor_status
         operator: "=="
@@ -68,6 +86,7 @@ rules:
 
   - id: VENDOR_RATING_LOW
     description: "Warning: Vendor performance rating is below standard (Score < 60)"
+    risk_impact: MEDIUM
     when:
       - field: vendor_rating
         operator: "<"
@@ -75,9 +94,12 @@ rules:
     then:
       decision: REVIEW
 
-  # --- 4. กฎงบประมาณ (Budget Control) ---
+  # -------------------------------------------------
+  # 4. Budget Control
+  # -------------------------------------------------
   - id: BUDGET_INSUFFICIENT
     description: "Purchase amount exceeds remaining department budget"
+    risk_impact: CRITICAL
     when:
       - field: budget_remaining
         operator: "<"
@@ -85,9 +107,12 @@ rules:
     then:
       decision: REJECT
 
-  # --- 5. กฎจับผิดซอยบิล (Split PO Fraud) ---
+  # -------------------------------------------------
+  # 5. Fraud Risk — Split PO
+  # -------------------------------------------------
   - id: POTENTIAL_SPLIT_PO
     description: "Fraud Risk: Potential Split PO detected (Multiple orders < 24h)"
+    risk_impact: HIGH
     when:
       - field: po_count_24h
         operator: ">"
@@ -98,20 +123,29 @@ rules:
     then:
       decision: ESCALATE
 
-  # --- 6. [NEW] กฎ AI Semantic Check (ใช้ LLM) ---
+  # -------------------------------------------------
+  # 6. AI Semantic Risk
+  # -------------------------------------------------
   - id: VENDOR_CATEGORY_MISMATCH
     type: llm_semantic_check
     description: "Check if items match vendor business category"
-    inputs: 
+    risk_impact: MEDIUM
+    inputs:
       - vendor_name
       - line_items
     then:
       decision: REVIEW
 
+# ==========================================
+# Override & Governance
+# ==========================================
 override:
   allow_manual_override: true
   override_requires_reason: true
 
+# ==========================================
+# Audit Policy
+# ==========================================
 audit:
   log_level: INFO
   retention_days: 90

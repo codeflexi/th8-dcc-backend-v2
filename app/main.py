@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     # Startup
     # -------------------------------------------------
     @app.on_event("startup")
+    
     def startup_load_demo_data():
         # 1) init audit repo (ต้องมีเสมอ)
         app.state.audit_repo = SupabaseAuditRepository()
@@ -48,8 +49,6 @@ def create_app() -> FastAPI:
 
         try:
             case_repo = SupabaseCaseRepository()
-
-        
 
             cases = case_repo.list_cases() or []
 
@@ -97,6 +96,14 @@ def create_app() -> FastAPI:
             "api_prefix": settings.api_prefix,
             "mode": "decision-run-on-demand",
         }
+    @app.get("/health/live")
+    def live():
+        return {"status": "alive"}
+
+    @app.get("/health/ready")
+    def ready():
+     ok = app.state.audit_repo is not None
+     return {"status": "ready" if ok else "degraded"}
 
     return app
 

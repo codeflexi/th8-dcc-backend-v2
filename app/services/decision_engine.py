@@ -42,7 +42,6 @@ class EvaluateRulesNode(Node):
         hit_rules: List[str] = []
 
         for rule in policy.get("rules", []):
-            # ข้าม rule ที่เป็น LLM semantic
             if rule.get("type") == "llm_semantic_check":
                 continue
 
@@ -57,8 +56,6 @@ class EvaluateRulesNode(Node):
                 operator = cond["operator"]
                 expected = cond["value"]
 
-                # ---- NORMALIZE FIELD ----
-                # policy ใช้ amount_total → ต้องมีใน inputs เสมอ
                 actual = inputs.get(field)
 
                 ok = _safe_compare(actual, operator, expected)
@@ -77,7 +74,6 @@ class EvaluateRulesNode(Node):
                 "rule_id": rule_id,
                 "description": description,
                 "hit": hit,
-                # matched ต้องเป็น evidence เฉพาะตอน hit เท่านั้น
                 "matched": matched if hit else [],
             })
 
@@ -104,22 +100,11 @@ class EvaluateLLMNode(Node):
         llm_rules = [r for r in policy.get("rules", []) if r.get("type") == "llm_semantic_check"]
 
         for rule in llm_rules:
-            prompt = f"""
-            Analyze this procurement case:
-            Vendor: {inputs.get('vendor_name')}
-            Items: {inputs.get('line_items')}
-
-            Rule: {rule['description']}
-
-            Answer strictly in JSON: {{"violation": boolean, "reason": "string"}}
-            """
-
-            # TODO: replace with real LLM call
+            # mock semantic result
             response = {"violation": False, "reason": "Items align with vendor nature"}
 
             hit = bool(response.get("violation"))
 
-            # ---- SEMANTIC MATCHED (NOT DETERMINISTIC EVIDENCE) ----
             semantic_matched = [{
                 "field": "llm_semantic_check",
                 "operator": "violation",
@@ -142,7 +127,7 @@ class EvaluateLLMNode(Node):
 
 
 # ============================================================
-# Node 3 — Recommend Decision
+# Node 3 — Recommend Decision (ROBUST)
 # ============================================================
 
 class RecommendDecisionNode(Node):
@@ -154,22 +139,75 @@ class RecommendDecisionNode(Node):
         inputs = ctx["inputs"]
         hit_rules = ctx["_hit_rules"]
 
-        decision = "ESCALATE" if hit_rules else "APPROVE"
-        reason_codes = hit_rules
+        # -----------------------------------------
+        # 1) Build rule → decision map from policy
+        # -----------------------------------------
+        rule_decision_map: Dict[str, str] = {}
 
+        for r in policy.get("rules", []):
+            rid = r.get("id")
+            dec = r.get("then", {}).get("decision")
+            if rid and dec:
+                rule_decision_map[rid] = dec
+
+        # -----------------------------------------
+        # 2) Collect decisions from HIT rules
+        # -----------------------------------------
+        hit_decisions: List[str] = []
+
+        for rid in hit_rules:
+            # 2.1 policy-driven
+            if rid in rule_decision_map:
+                hit_decisions.append(rule_decision_map[rid])
+                continue
+
+            # 2.2 fallback convention (for old policies / tests)
+            if rid.startswith(("VENDOR_", "BUDGET_")):
+                hit_decisions.append("REJECT")
+            elif rid.startswith(("HIGH_", "POTENTIAL_")):
+                hit_decisions.append("ESCALATE")
+            elif rid.startswith(("SLA_",)):
+                hit_decisions.append("REVIEW")
+
+        # -----------------------------------------
+        # 3) Decision Priority
+        # -----------------------------------------
+        # REJECT > ESCALATE > REVIEW > APPROVE
+        if "REJECT" in hit_decisions:
+            decision = "REJECT"
+        elif "ESCALATE" in hit_decisions:
+            decision = "ESCALATE"
+        elif "REVIEW" in hit_decisions:
+            decision = "REVIEW"
+        else:
+            decision = "APPROVE"
+
+        # -----------------------------------------
+        # 4) Authority
+        # -----------------------------------------
         required_role = _derive_required_role(policy, inputs)
+
+        # -----------------------------------------
+        # 5) Risk context (safe extension)
+        # -----------------------------------------
+        risk_factors = []
+        if decision == "ESCALATE":
+            risk_factors.append("RULE_ESCALATION")
+        if decision == "REJECT":
+            risk_factors.append("RULE_REJECTION")
 
         ctx["recommendation"] = {
             "decision": decision,
             "required_role": required_role,
-            "reason_codes": reason_codes,
+            "reason_codes": hit_rules,
+            "risk_factors": risk_factors,
         }
 
         return ctx
 
 
 # ============================================================
-# Decision Engine (Graph-ready)
+# Decision Engine
 # ============================================================
 
 class DecisionEngine:
@@ -181,11 +219,6 @@ class DecisionEngine:
 
     @classmethod
     def evaluate(cls, *, policy: Dict, inputs: Dict) -> Dict:
-        """
-        Contract:
-        - inputs ต้องมี field ที่ตรงกับ policy.when[].field
-          (เช่น amount_total, vendor_status, vendor_rating, ...)
-        """
         ctx: DecisionContext = {
             "policy": policy,
             "inputs": inputs,
@@ -204,16 +237,10 @@ class DecisionEngine:
 
 
 # ============================================================
-# Helper Functions (FAIL-SAFE)
+# Helpers
 # ============================================================
 
 def _safe_compare(actual: Any, operator: str, expected: Any) -> bool:
-    """
-    Enterprise-safe comparison:
-    - Never raises
-    - Missing / invalid input → rule NOT hit
-    """
-
     if actual is None:
         return False
 

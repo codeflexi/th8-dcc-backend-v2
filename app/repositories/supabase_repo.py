@@ -36,6 +36,7 @@ class SupabaseCaseRepository(CaseRepository):
             payload.setdefault("domain", r.get("domain"))
             payload.setdefault("status", r.get("status"))
             payload.setdefault("created_at", r.get("created_at"))
+            payload.setdefault("risk_level", r.get("risk_level"))
 
             items.append(payload)
 

@@ -14,6 +14,8 @@ from app.repositories.supabase_repo import SupabaseCaseRepository
 logger = logging.getLogger("decisions_api")
 router = APIRouter(tags=["decisions"])
 
+print("🔥 decisions router loaded")
+
 # =====================================================
 # Schemas
 # =====================================================
@@ -69,35 +71,82 @@ def load_policy_yaml(policy_id: str, version: str) -> Dict:
 # Risk Derivation (POLICY-DRIVEN)
 # =====================================================
 
-def derive_risk_level(decision: str, amount: float, policy: Dict) -> str:
+RISK_PRIORITY = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+
+
+def collect_risk_drivers(policy: Dict, rule_results: List[Dict]) -> List[Dict]:
     """
-    Risk = f(rule outcome, thresholds, safety net)
+    Build list of risk drivers from rules that HIT
+    using risk_impact defined in policy.
     """
+    drivers = []
 
-    # 1) default
-    risk = "LOW"
+    for r in rule_results:
+        if not r.get("hit"):
+            continue
 
-    # 2) decision-based
-    if decision == "REJECT":
-        return "CRITICAL"
-    if decision == "ESCALATE":
-        risk = "HIGH"
-    elif decision == "REVIEW":
-        risk = "MEDIUM"
+        rule_def = next(
+            (x for x in policy.get("rules", []) if x.get("id") == r.get("rule_id")),
+            None
+        )
 
-    # 3) threshold-based
+        if rule_def and rule_def.get("risk_impact"):
+            drivers.append({
+                "rule_id": r["rule_id"],
+                "impact": rule_def["risk_impact"],
+                "description": rule_def.get("description"),
+            })
+
+    return drivers
+
+
+def derive_risk_from_drivers(drivers: List[Dict]) -> str:
+    """
+    Pick highest priority impact from drivers.
+    """
+    if not drivers:
+        return "LOW"
+
+    impacts = [d["impact"] for d in drivers]
+
+    for p in RISK_PRIORITY:
+        if p in impacts:
+            return p
+
+    return "LOW"
+
+
+def apply_threshold_safety_net(
+    current_risk: str,
+    amount: float,
+    policy: Dict
+) -> str:
+    """
+    Apply thresholds + safety net from policy.config / policy.thresholds
+    """
+    risk = current_risk
+
+    # amount thresholds
     thresholds = policy.get("thresholds", {}).get("amount", {})
-    if amount >= thresholds.get("high", float("inf")):
+    high_th = thresholds.get("high")
+    med_th = thresholds.get("medium")
+
+    if high_th is not None and amount >= high_th:
         risk = "HIGH"
-    elif amount >= thresholds.get("medium", float("inf")):
+    elif med_th is not None and amount >= med_th:
         if risk == "LOW":
             risk = "MEDIUM"
 
-    # 4) safety net
+    # safety net
     config = policy.get("config", {})
-    high_risk_threshold = float(config.get("high_risk_threshold", float("inf")))
-    if amount > high_risk_threshold:
-        risk = config.get("force_risk_level", "HIGH")
+    force_th = config.get("high_risk_threshold")
+    force_level = config.get("force_risk_level", "HIGH")
+
+    try:
+        if force_th is not None and amount > float(force_th):
+            risk = force_level
+    except:
+        pass
 
     return risk
 
@@ -182,13 +231,47 @@ def execute_decision_run(
     # -------------------------------------------------
     result = DecisionEngine.evaluate(policy=policy, inputs=inputs)
 
+    decision_val = result["recommendation"].get("decision", "REVIEW")
+
     # -------------------------------------------------
-    # 6. Build Evaluation Logic (AUDIT-GRADE)
+    # 6. Derive Risk Level (POLICY-DRIVEN)
+    # -------------------------------------------------
+    risk_drivers = collect_risk_drivers(policy, result["rule_results"])
+
+    base_risk = derive_risk_from_drivers(risk_drivers)
+
+    new_risk = apply_threshold_safety_net(
+        base_risk,
+        amount,
+        policy
+    )
+
+    # -------------------------------------------------
+    # 7. Audit: Risk Derived
+    # -------------------------------------------------
+    AuditService.write(
+        "RISK_LEVEL_DERIVED",
+        {
+            "case_id": case["case_id"],
+            "run_id": run_id,
+            "risk_level": new_risk,
+            "derived_from": {
+                "policy_id": policy_id,
+                "policy_version": policy_version,
+                "decision": decision_val,
+                "amount": amount,
+                "risk_drivers": risk_drivers,
+            },
+        },
+        "SYSTEM",
+    )
+
+    # -------------------------------------------------
+    # 8. Build Evaluation Logic (AUDIT-GRADE)
     # -------------------------------------------------
     for rr in result["rule_results"]:
         eval_logic = {}
 
-        # A. conditions
         conditions_to_check = []
         if rr.get("matched"):
             conditions_to_check = rr["matched"]
@@ -205,7 +288,6 @@ def execute_decision_run(
 
         rr["matched"] = conditions_to_check
 
-        # B. explain logic
         for m in conditions_to_check:
             field = m.get("field")
             operator = m.get("operator")
@@ -255,7 +337,7 @@ def execute_decision_run(
         )
 
     # -------------------------------------------------
-    # 7. Decision Summary
+    # 9. Decision Summary
     # -------------------------------------------------
     AuditService.write(
         "DECISION_RECOMMENDED",
@@ -265,27 +347,28 @@ def execute_decision_run(
 
     AuditService.write(
         "DECISION_RUN_COMPLETED",
-        {"case_id": case["case_id"], "run_id": run_id, "decision": result["recommendation"].get("decision")},
+        {
+            "case_id": case["case_id"],
+            "run_id": run_id,
+            "decision": decision_val,
+            "risk_level": new_risk,
+        },
         "SYSTEM",
     )
 
     # -------------------------------------------------
-    # 8. Risk + Status Sync (POLICY-DRIVEN)
+    # 10. Sync back to Case (SYSTEM OF RECORD)
     # -------------------------------------------------
-    decision_val = result["recommendation"].get("decision", "REVIEW")
-
-    new_risk = derive_risk_level(decision_val, amount, policy)
+    payload["risk_level"] = new_risk
+    payload["last_decision"] = decision_val
+    payload["evaluated_at"] = datetime.utcnow().isoformat()
+    payload["last_rule_results"] = result["rule_results"]
 
     new_status = "EVALUATED"
     if decision_val == "REJECT":
         new_status = "REJECTED"
     elif decision_val == "APPROVE":
         new_status = "APPROVED"
-
-    payload["risk_level"] = new_risk
-    payload["last_decision"] = decision_val
-    payload["evaluated_at"] = datetime.utcnow().isoformat()
-    payload["last_rule_results"] = result["rule_results"]
 
     try:
         repo = SupabaseCaseRepository()
