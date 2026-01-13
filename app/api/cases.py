@@ -8,6 +8,7 @@ import json
 from pydantic import BaseModel, Field
 import math
 
+# Schema imports
 from app.schemas.case import CaseDetail
 from app.schemas.portfolio import CasePortfolioItem
 from app.schemas.decision import DecisionSummary
@@ -217,7 +218,7 @@ def list_cases(
     }
 
 # =================================================
-# 3. GET Case Detail
+# 3. GET Case Detail (UPDATED WITH STORY)
 # =================================================
 @router.get("/{case_id}", response_model=CaseDetail)
 def get_case(case_id: str, request: Request):
@@ -245,6 +246,60 @@ def get_case(case_id: str, request: Request):
         recommended_action=payload.get("last_decision", "REVIEW"),
     )
 
+    # ----------------------------------------------------
+    # ✅ GENERATE DECISION STORY (Mock Logic)
+    # ----------------------------------------------------
+    story_data = None
+    print(risk);
+    if risk in ["HIGH", "CRITICAL"]:
+        story_data = {
+            "headline": f"Why this case is {risk}",
+            "risk_drivers": [
+                {"label": "Vendor Blacklisted", "detail": "vendor_status = BLACKLISTED", "color": "red"},
+                {"label": "High Amount Threshold", "detail": f"amount > 200,000", "color": "orange"}
+            ],
+            "business_impact": [
+                f"Financial Exposure: THB {amount_display:,.2f}",
+                "Compliance / Audit Risk: Blacklisted vendor exception"
+            ],
+            "suggested_action": {
+                "title": "Hold & Escalate to COO",
+                "description": "Requires executive approval due to blacklist status."
+            },
+            "evidence_list": [
+                {
+                    "title": "Master Contract – Office Supply 2026",
+                    "subtitle": "Clause 4.2 • Pricing • Validity",
+                    "description": "Evidence: ราคาสินค้าเกินราคาตามสัญญา / วันหมดอายุสัญญา",
+                    "source_code": "doc_id=CONTRACT-2026-001 • page=6"
+                },
+                {
+                    "title": "Vendor Profile: Bad Supplier Ltd.",
+                    "subtitle": "Status = BLACKLISTED • last_update 2025-11-18",
+                    "description": "Evidence: vendor ถูกระงับจาก incident ก่อนหน้า (มี reference)",
+                    "source_code": "source=vendor_master • change_log_id=VM-18831"
+                }
+            ]
+        }
+    else:
+        # Story for Low/Medium Risk
+        story_data = {
+            "headline": "Why this case is SAFE",
+            "risk_drivers": [
+                 {"label": "Vendor Verified", "detail": "Status = ACTIVE", "color": "green"},
+                 {"label": "Within Budget", "detail": "Amount within department limit", "color": "green"}
+            ],
+            "business_impact": [
+                "No negative impact detected.",
+                "Standard SLA applies."
+            ],
+            "suggested_action": {
+                "title": "Proceed to Auto-Approval",
+                "description": "All checks passed. System can auto-approve."
+            },
+            "evidence_list": []
+        }
+
     return CaseDetail(
         id=case["case_id"],
         domain=case.get("domain", "procurement"),
@@ -258,6 +313,8 @@ def get_case(case_id: str, request: Request):
         decision_summary=decision_summary,
         created_at=case.get("created_at"),
         evaluated_at=case.get("updated_at"),
+        # ✅ Pass story data to schema
+        story=story_data,
         raw=case,
     )
 

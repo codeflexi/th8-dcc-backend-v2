@@ -110,3 +110,35 @@ class SupabaseCaseRepository(CaseRepository):
 
         if not res.data:
             raise RuntimeError(f"Failed to update case status for case_id={case_id}")
+    # ---------------------------------------------------------
+    # ✅ เพิ่มส่วนใหม่: Audit Logs (จำเป็นสำหรับ AI เพื่อดูประวัติ)
+    # ---------------------------------------------------------
+    def get_audit_logs(self, case_id: str) -> List[dict]:
+        try:
+            res = (
+                supabase.table("audit_events")
+                .select("*")
+                .eq("case_id", case_id)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            print(f"Repo Error (Audit): {e}")
+            return []
+
+    # ---------------------------------------------------------
+    # ✅ เพิ่มส่วนใหม่: Vector Search (สำหรับ RAG)
+    # ---------------------------------------------------------
+    def search_evidence(self, query_embedding: List[float], match_count: int = 3) -> List[dict]:
+        try:
+            params = {
+                "query_embedding": query_embedding,
+                "match_count": match_count,
+                "filter_policy_id": None
+            }
+            res = supabase.rpc("match_evidence", params).execute()
+            return res.data or []
+        except Exception as e:
+            print(f"Repo Error (Vector): {e}")
+            return []

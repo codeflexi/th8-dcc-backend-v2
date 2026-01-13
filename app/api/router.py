@@ -6,6 +6,7 @@ from app.api.cases import router as cases_router
 from app.api.audit import router as audit_router
 from app.api.decisions import router as decisions_router
 from app.api.evidence import router as evidence_router
+from app.api.copilot import router as copilot_router
 
 api_router = APIRouter()
 
@@ -57,4 +58,13 @@ api_router.include_router(
     evidence_router,
     prefix="/evidence",
     tags=["evidence"],
+)
+
+# -------------------------------------------------
+# copilot
+# -------------------------------------------------
+api_router.include_router(
+    copilot_router,  # 2. ✅ แก้ตรงนี้จาก evidence_router เป็น copilot_router
+    prefix="/copilot",
+    tags=["copilot"],
 )

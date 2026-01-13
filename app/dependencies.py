@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.repositories.supabase_repo import SupabaseCaseRepository
 from app.repositories.supabase_audit_repo import SupabaseAuditRepository
 from app.services.orchestrator import DecisionOrchestrator
+from app.services.copilot_agent import CopilotAgent
 
 logger = logging.getLogger(__name__)
 
