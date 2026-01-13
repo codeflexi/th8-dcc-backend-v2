@@ -61,6 +61,28 @@ class SupabaseCaseRepository(CaseRepository):
 
         return res.data.get("payload")
 
+    
+    # -------------------------
+    # ✅ NEW: Get Metadata (Safe & Layered)
+    # -------------------------
+    def get_case_metadata(self, case_id: str) -> dict:
+        """
+        ดึง Metadata ที่จำเป็น (รวม Policy) เพื่อไม่ให้ข้อมูลหายตอน Save ทับ
+        """
+        try:
+            res = (
+                self.client  # ใช้ client ของ repo เอง
+                .table("cases")
+                .select("case_id, domain, created_at, status, payload.policy_id, policy_version")
+                .eq("case_id", case_id)
+                .maybe_single()
+                .execute()
+            )
+            return res.data or {}
+        except Exception as e:
+            print(f"Repo Error (Get Metadata): {e}")
+            return {}
+        
     # -------------------------
     # Save / upsert case
     # -------------------------
@@ -142,3 +164,59 @@ class SupabaseCaseRepository(CaseRepository):
         except Exception as e:
             print(f"Repo Error (Vector): {e}")
             return []
+        
+    
+    # ---------------------------------------------------------
+    # ✅ FIX: Save Evaluation Result (บันทึกผลหลังรัน Engine)
+    # ---------------------------------------------------------
+    def save_evaluation_result(self, case_id: str, analysis_result: dict, decision: dict) -> None:
+        """
+        updates case payload with new rule results and adds an audit log
+        """
+        now = datetime.utcnow().isoformat()
+        
+        # 1. ดึงข้อมูลเดิมมาก่อน (เพื่อไม่ให้ field อื่นหาย)
+        current_case = self.get_case(case_id)
+        if not current_case:
+            raise ValueError(f"Case {case_id} not found")
+
+        # 2. อัปเดต Payload ด้วยผลลัพธ์ใหม่
+        payload = current_case  # get_case ของคุณ return payload อยู่แล้ว
+        
+        # อัปเดตค่าสำคัญ
+        payload["status"] = "EVALUATED"
+        payload["risk_level"] = decision.get("risk_level", "HIGH")
+        payload["evaluated_at"] = now
+        payload["last_rule_results"] = analysis_result.get("rule_results", [])
+        
+        # อัปเดต Decision Summary
+        payload["decision_summary"] = {
+            "risk_level": decision.get("risk_level"),
+            "recommended_action": decision.get("decision"),
+            "reason": decision.get("reason_codes", [])
+        }
+
+        # 3. บันทึก Case ลง DB (Update)
+        supabase.table("cases").update({
+            "status": "EVALUATED",
+            "risk_level": decision.get("risk_level"), # ถ้ามี column นี้แยก
+            "payload": payload,
+            "updated_at": now
+        }).eq("case_id", case_id).execute()
+
+        # 4. ✅ สร้าง Audit Log ใหม่ (เพื่อให้ Timeline ขยับ)
+        audit_payload = {
+            "case_id": case_id,
+            "event_type": "RULE_EVALUATED",
+            "actor": {"id": "system", "name": "Decision Engine"},
+            "action": "RE-EVALUATED",  # ใช้ชื่อให้รู้ว่ารันใหม่
+            "payload": {
+                "risk_level": decision.get("risk_level"),
+                "recommendation": decision.get("decision"),
+                "violated_rules": len(decision.get("reason_codes", [])),
+                "timestamp": now
+            },
+            "created_at": now
+        }
+        
+        supabase.table("audit_events").insert(audit_payload).execute()    

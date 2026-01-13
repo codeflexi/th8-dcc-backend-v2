@@ -41,6 +41,14 @@ authority:
       required_role: Procurement_Manager
 
 # ==========================================
+# Contract Configuration
+# ==========================================
+contract_compliance:
+  validity_check: true        # ตรวจวันหมดอายุ
+  price_check: true           # ตรวจราคา
+  max_allowed_variance_pct: 3.0  # ยอมให้ราคาเกินสัญญาได้ไม่เกิน 3% (ถ้าเกินถือว่าผิดกฎ)
+
+# ==========================================
 # Decision Rules
 # ==========================================
 rules:
@@ -135,7 +143,35 @@ rules:
       - line_items
     then:
       decision: REVIEW
+  # -------------------------------------------------
+  # 7. Contract Validity
+  # -------------------------------------------------
+  - id: CONTRACT_EXPIRED
+    type: contract_check  # <--- เติมบรรทัดนี้ ✅
+    description: "Purchase order referencing an expired contract"
+    risk_impact: CRITICAL
+    then:
+      decision: REJECT
 
+  # -------------------------------------------------
+  # 8. Price Variance
+  # -------------------------------------------------
+  - id: CONTRACT_PRICE_VARIANCE
+    type: contract_check  # <--- เติมบรรทัดนี้ ✅
+    description: "Unit price exceeds contract agreement (> 3%)"
+    risk_impact: HIGH
+    then:
+      decision: ESCALATE
+
+  # -------------------------------------------------
+  # 9. No Contract Reference
+  # -------------------------------------------------
+  - id: NO_CONTRACT_REFERENCE
+    type: contract_check  # <--- เติมบรรทัดนี้ ✅
+    description: "Item purchased without active contract reference"
+    risk_impact: LOW 
+    then:
+      decision: REVIEW
 # ==========================================
 # Override & Governance
 # ==========================================

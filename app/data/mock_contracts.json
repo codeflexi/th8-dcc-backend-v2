@@ -1,0 +1,54 @@
+{
+  "contracts": {
+    "con": {
+      "vendor_name": "con",
+      "doc_id": "CTR-2026-001",
+      "doc_title": "Master Supply Agreement - Good Tuk Co., Ltd.",
+      "file_url": "/documents/CTR-2026-001.pdf",
+      "valid_from": "2026-01-01",
+      "valid_to": "2026-12-31",
+      "items": {
+        "IT-LAP-001": {
+          "sku": "IT-LAP-001",
+          "name": "MacBook Pro 14-inch",
+          "agreed_price": 72000.00,
+          "evidence_meta": {
+            "page": 5,
+            "content_snippet": "Item 1.1: MacBook Pro 14-inch (M3 Pro) ... Unit Price: 72,000 THB",
+            "highlight_box": { "x": 10, "y": 45, "w": 80, "h": 5 },
+            "score": 1.0
+          }
+        },
+        "IT-ACC-002": {
+          "sku": "IT-ACC-002",
+          "name": "Magic Mouse",
+          "agreed_price": 2500.00,
+          "evidence_meta": {
+            "page": 12,
+            "content_snippet": "Item 4.5: Magic Mouse (White) ... Unit Price: 2,500 THB",
+            "highlight_box": { "x": 10, "y": 10, "w": 60, "h": 4 },
+            "score": 1.0
+          }
+        }
+      }
+    },
+    "contract": {
+      "vendor_name": "contract",
+      "doc_id": "CTR-2026-999",
+      "doc_title": "Old Contract Example",
+      "valid_from": "2026-01-01",
+      "valid_to": "2026-12-31",
+      "items": { "IT-ACC-002": {
+          "sku": "IT-ACC-002",
+          "name": "Magic Mouse",
+          "agreed_price": 2500.00,
+          "evidence_meta": {
+            "page": 12,
+            "content_snippet": "Item 4.5: Magic Mouse (White) ... Unit Price: 2,500 THB",
+            "highlight_box": { "x": 10, "y": 10, "w": 60, "h": 4 },
+            "score": 1.0
+          }
+        }}
+    }
+  }
+}

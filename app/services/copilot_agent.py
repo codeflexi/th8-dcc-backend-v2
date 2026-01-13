@@ -1,11 +1,11 @@
 import json
 import os
 import asyncio
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, List, Dict
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# ✅ ใช้ Repo ตัวใหม่ (ที่ยิง API + Async)
+# ✅ Use the new Async/API-based Repository
 from app.repositories.copilot_repo import CopilotRepository
 
 load_dotenv()
@@ -20,12 +20,42 @@ class CopilotAgent:
         self.model_name = "gpt-4o" 
         self.embedding_model = "text-embedding-3-small"
 
+        # 3. Load Mock Contracts (Phase 1)
+        self.mock_contracts = self._load_mock_contracts()
+        if self.mock_contracts:
+            print("🔹 Document initialized.")
+            print(f"   - Contract: {self.mock_contracts}")
+
+    def _load_mock_contracts(self) -> dict:
+        """Loads mock contract data from a local JSON file."""
+        try:
+            # Ensure the directory exists or adjust path as needed
+            # ถอยกลับไปที่ root project แล้วหา backend/data/mock_contracts.json
+            file_path = os.path.join("app" , "data", "mock_contracts.json")
+            
+            if not os.path.exists(file_path):
+                # Fallback path if running from deep directory
+                file_path = os.path.join("backend","app", "data", "mock_contracts.json")
+                
+            
+            if not os.path.exists(file_path):
+                print(f"⚠️ Contract DB not found at: {file_path}")
+                return {"contracts": {}}
+            
+            
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ Failed to load mock contracts: {e}")
+            return {"contracts": {}}
+
     async def run_workflow(self, user_query: str, case_id: str) -> AsyncGenerator[str, None]:
         """
         Real Workflow:
         1. Load Case Context (API -> SQL)
-        2. RAG Search (Vector DB) -> Send Evidence
-        3. LLM Generation (Stream)
+        2. Contract & Price Check (Logic Rule) -> Send Evidence
+        3. RAG Search (Vector DB) -> Send Evidence
+        4. LLM Generation (Stream)
         """
         
         # --- STEP 1: Context Gathering (Case Data) ---
@@ -34,33 +64,61 @@ class CopilotAgent:
             "status": "active", "desc": f"Loading case data for {case_id}..."
         })
         
-        # ✅ เรียกข้อมูลแบบ Async (แก้ Timeout)
+        # ✅ Async data fetching
         case_data = await self.repo.get_case(case_id)
         audit_logs = await self.repo.get_audit_logs(case_id)
         
         if not case_data:
             yield self._format_event("trace", {
                 "step_id": 1, "title": "Context Error", 
-                "status": "failed", "desc": "Case ID not found."
+                "status": "failed", "desc": "Case ID not found in database."
             })
             yield self._format_event("message_chunk", {"text": "ขออภัยครับ ไม่พบข้อมูล Case ID นี้ในระบบ"})
             return
 
-        # ✅ สร้าง Context String แบบฉลาด (Robust & Dynamic)
-        case_context_str = self._build_smart_context(case_data, audit_logs)
+        # Extract useful info for logic
+        raw = case_data.get('raw', {})
+        payload = raw.get('payload', {}) if isinstance(raw, dict) else {}
+        if not payload and isinstance(case_data, dict) and 'payload' in case_data: 
+             payload = case_data['payload']
+        if not isinstance(payload, dict): payload = {}
+
+        vendor_name = case_data.get('vendor_id') or payload.get('vendor_name') or payload.get('vendor') or "story 1" # Fallback
+        line_items = payload.get('line_items', [])
+
+        # --- STEP 2: Contract & Price Analysis (Logic Rule) ---
+        yield self._format_event("trace", {
+            "step_id": 2, "title": "Contract Check", 
+            "status": "active", "desc": "Verifying prices against master agreement..."
+        })
+
+        # Run logic (Improved matching logic)
+        contract_analysis = self._analyze_price_variance(line_items, vendor_name)
+        
+        # Send contract evidences to UI immediately
+        if contract_analysis["evidences"]:
+            for ev in contract_analysis["evidences"]:
+                yield self._format_event("evidence_reveal", ev)
+        
+        yield self._format_event("trace", {
+            "step_id": 2, "title": "Contract Check", 
+            "status": "completed", "desc": "Price verification completed."
+        })
+
+        # ✅ Build Smart Context (Now includes Contract Analysis & Engine Results)
+        case_context_str = self._build_smart_context(case_data, audit_logs, contract_analysis["report_text"])
         
         yield self._format_event("trace", {
             "step_id": 1, "title": "Analyzing Context", 
-            "status": "completed", "desc": "Full case snapshot & Risk analysis loaded."
+            "status": "completed", "desc": "Full context loaded."
         })
 
-        # --- STEP 2: RAG Knowledge Search ---
+        # --- STEP 3: RAG Knowledge Search (Vector DB) ---
         yield self._format_event("trace", {
-            "step_id": 2, "title": "Policy Search", 
+            "step_id": 3, "title": "Policy Search", 
             "status": "active", "desc": "Scanning policy documents (Vector DB)..."
         })
 
-        # 2.1 Generate Embedding
         try:
             embedding_resp = self.client.embeddings.create(
                 input=user_query,
@@ -68,7 +126,6 @@ class CopilotAgent:
             )
             query_embedding = embedding_resp.data[0].embedding
 
-            # 2.2 Search Vector
             matches = self.repo.search_evidence(query_embedding, match_count=3)
         except Exception as e:
             print(f"Vector Search Error: {e}")
@@ -85,7 +142,6 @@ class CopilotAgent:
                 score = doc.get('similarity', 0) * 100
                 if score < 60: continue 
 
-                # ส่ง Evidence ไปโชว์ที่หน้า UI
                 yield self._format_event("evidence_reveal", {
                     "file_id": doc.get('doc_id', f"doc_{idx}"),
                     "file_name": doc.get('title', 'Unknown Policy'),
@@ -99,29 +155,29 @@ class CopilotAgent:
             rag_context_str = "No specific policy documents found related to this query."
 
         yield self._format_event("trace", {
-            "step_id": 2, "title": "Policy Search", 
+            "step_id": 3, "title": "Policy Search", 
             "status": "completed", 
             "desc": f"Found {len(matches)} relevant references." if found_evidence else "No references found."
         })
 
-        # --- STEP 3: Reasoning & Response (LLM) ---
+        # --- STEP 4: Reasoning & Response (LLM) ---
         yield self._format_event("trace", {
-            "step_id": 3, "title": "Final Reasoning", 
+            "step_id": 4, "title": "Final Reasoning", 
             "status": "active", "desc": "Synthesizing answer with GPT-4o..."
         })
 
-        # 3.1 Construct System Prompt
+        # 4.1 Construct System Prompt
         system_prompt = f"""
         You are an expert Decision Control Copilot (AI Assistant).
-        Analyze the provided CASE DATA and POLICY EVIDENCE to answer the user's question.
+        Analyze the provided CASE DATA, CONTRACT CHECK, and POLICY EVIDENCE to answer the user's question.
 
-        GOAL: Provide accurate, helpful answers based on the 'CASE SNAPSHOT', 'RISK ANALYSIS', and 'AUDIT LOGS'.
+        GOAL: Provide accurate, helpful answers based on the 'CASE SNAPSHOT', 'CONTRACT CHECK', and 'RISK ANALYSIS'.
 
         RULES:
         - Answer in Thai language (Natural & Professional).
-        - If the user asks for specific details (like PO Number, Vendor, Amount), look at the [CASE SNAPSHOT] section.
-        - Use the [RISK ANALYSIS] to explain why a case is flagged.
-        - If referencing policy, cite the source clearly.
+        - If the user asks about price validity, refer to the [CONTRACT CHECK] section.
+        - If the user asks for specific details (PO Number, Vendor), look at [CASE SNAPSHOT].
+        - Use [RISK ANALYSIS] and [CONTRACT STATUS FROM ENGINE] to explain context.
         - Be concise.
 
         {case_context_str}
@@ -129,7 +185,7 @@ class CopilotAgent:
         {rag_context_str}
         """
 
-        # 3.2 Call OpenAI Stream
+        # 4.2 Call OpenAI Stream
         try:
             stream = self.client.chat.completions.create(
                 model=self.model_name,
@@ -141,7 +197,7 @@ class CopilotAgent:
                 stream=True
             )
 
-            # 3.3 Streaming Response
+            # 4.3 Streaming Response
             for chunk in stream:
                 if chunk.choices[0].delta.content:
                     text_chunk = chunk.choices[0].delta.content
@@ -151,7 +207,7 @@ class CopilotAgent:
             yield self._format_event("message_chunk", {"text": f"\n\n[System Error] LLM Processing failed: {str(e)}"})
 
         yield self._format_event("trace", {
-            "step_id": 3, "title": "Final Reasoning", 
+            "step_id": 4, "title": "Final Reasoning", 
             "status": "completed", "desc": "Response generated."
         })
 
@@ -162,20 +218,84 @@ class CopilotAgent:
         """Format data as Server-Sent Events (JSON line)"""
         return json.dumps({"type": event_type, "data": data}) + "\n"
 
-    def _build_smart_context(self, data: dict, audits: List[dict]) -> str:
+    def _analyze_price_variance(self, line_items: list, vendor_name: str) -> dict:
         """
-        แปลง JSON Structure (จาก API) ให้เป็น Text สวยๆ
-        Features:
-        - Robust Parsing: ป้องกัน Error ถ้า Data ไม่ครบ หรือ Type ผิด
-        - Dynamic Snapshot: กวาดทุก Key ใน Payload มาแสดง (เช่น PO Number)
-        - Reverse Audit: เรียง Log ใหม่เอาล่าสุดขึ้นก่อน
+        Analyzes price variance against mock contracts.
+        Returns report text and list of evidences.
         """
-        # 1. Handle Nested Structure (Safety Check)
+        contracts_db = self.mock_contracts.get("contracts", {})
+        
+        # 1. Improved Vendor Matching Logic (Case Insensitive)
+        contract = contracts_db.get(vendor_name)
+        if not contract:
+            contract = contracts_db.get(vendor_name.lower())
+        
+        if not contract:
+            # Loop search for partial match
+            for k, v in contracts_db.items():
+                if k.lower() == vendor_name.lower():
+                    contract = v
+                    break
+        
+        # Optional: Demo fallback if you want to force "story 1"
+        # if not contract and "story 1" in contracts_db: contract = contracts_db["story 1"]
+
+        if not contract:
+            return {
+                "report_text": f"- No active contract found for vendor: {vendor_name}",
+                "evidences": []
+            }
+
+        report_lines = []
+        evidences = []
+        
+        report_lines.append(f"{'SKU':<12} | {'PO Price':<10} | {'Contract':<10} | {'Diff %':<8} | {'Status'}")
+        report_lines.append("-" * 65)
+
+        for item in line_items:
+            sku = item.get('sku', '')
+            try: po_price = float(item.get('unit_price', 0))
+            except: po_price = 0.0
+            
+            contract_item = contract["items"].get(sku)
+
+            if contract_item:
+                agreed_price = contract_item["agreed_price"]
+                diff = po_price - agreed_price
+                diff_percent = (diff / agreed_price) * 100 if agreed_price > 0 else 0
+                
+                status = "✅ OK"
+                if diff_percent > 5.0: status = f"❌ VIOLATION"
+                elif diff_percent > 0: status = f"⚠️ HIGH"
+
+                report_lines.append(f"{sku:<12} | {po_price:,.0f}      | {agreed_price:,.0f}      | {diff_percent:+.1f}%    | {status}")
+
+                evidences.append({
+                    "file_id": contract["doc_id"],
+                    "file_name": f"{contract['doc_title']} (Page {contract_item['evidence_meta']['page']})",
+                    "highlight_text": contract_item['evidence_meta']['content_snippet'],
+                    "score": 0.95,
+                    "page": contract_item['evidence_meta']['page'],
+                    "box": contract_item['evidence_meta']['highlight_box'] 
+                })
+            else:
+                report_lines.append(f"{sku:<12} | {po_price:,.0f}      | {'N/A':<10} | {'-':<8} | ❓ No Ref")
+
+        return {
+            "report_text": "\n".join(report_lines),
+            "evidences": evidences
+        }
+
+    def _build_smart_context(self, data: dict, audits: List[dict], contract_report: str = "") -> str:
+        """
+        Parses JSON Structure (from API) into readable text.
+        Includes Contract Report and Engine Results.
+        """
+        # 1. Handle Nested Structure
         raw = data.get('raw', {})
         if not isinstance(raw, dict): raw = {}
         
         payload = raw.get('payload', {}) if isinstance(raw, dict) else {}
-        # Fallback Logic: ถ้าไม่เจอใน raw ให้หาใน root
         if not payload and isinstance(data, dict) and 'payload' in data: 
              payload = data['payload']
         if not isinstance(payload, dict): payload = {}
@@ -183,28 +303,43 @@ class CopilotAgent:
         summary = data.get('decision_summary', {}) if isinstance(data.get('decision_summary'), dict) else {}
         story = data.get('story', {}) if isinstance(data.get('story'), dict) else {}
 
-        # 2. Dynamic Snapshot (กวาดข้อมูล Metadata ทั้งหมด)
-        snapshot_lines = []
+        # 2. Extract Engine Results (Consistency Check)
+        engine_contract_result = ""
+        last_results = payload.get("last_rule_results", [])
+        contract_rules = [r for r in last_results if r.get("rule_id") in ["CONTRACT_EXPIRED", "CONTRACT_PRICE_VARIANCE", "NO_CONTRACT_REFERENCE"]]
         
-        # ฟิลด์ที่ดึงแยกไปโชว์ที่อื่นแล้ว ไม่ต้องเอามาซ้ำใน Snapshot
+        if contract_rules:
+            engine_contract_result = "\n[CONTRACT STATUS FROM ENGINE]\n"
+            for r in contract_rules:
+                status = "❌ FAIL" if r.get("hit") else "✅ PASS"
+                desc = r.get("description")
+                detail = ""
+                inputs = r.get("inputs", {})
+                if isinstance(inputs, dict):
+                    detail = " | ".join([str(v) for v in inputs.values()])
+                engine_contract_result += f"- {status} {r.get('rule_id')}: {desc} ({detail})\n"
+
+        # 3. Dynamic Snapshot
+        snapshot_lines = []
         exclude_keys = ['line_items', 'last_rule_results', 'risk_drivers', 'description', 'payload', 'raw', 'story', 'decision_summary']
         
-        # เพิ่ม ID และ Status หลักก่อน
         if data.get('id') or data.get('case_id'): 
             snapshot_lines.append(f"Case ID: {data.get('id') or data.get('case_id')}")
         if data.get('status'): 
             snapshot_lines.append(f"Status: {data.get('status')}")
-            
-        # วนลูปดึงข้อมูลใน Payload
+        
+        evaluated_at = data.get('evaluated_at') or payload.get('evaluated_at')
+        if evaluated_at:
+             snapshot_lines.append(f"Evaluated At: {str(evaluated_at).replace('T', ' ')[:19]}")
+
         for key, val in payload.items():
             if key not in exclude_keys and not isinstance(val, (list, dict)):
-                # จัด Format Key ให้อ่านง่าย (เช่น "po_number" -> "Po Number")
                 readable_key = key.replace('_', ' ').title()
                 snapshot_lines.append(f"{readable_key}: {val}")
         
         snapshot_txt = "\n".join(snapshot_lines)
 
-        # 3. Extract Risk Story
+        # 4. Extract Risk Story
         risk_drivers_txt = ""
         risk_drivers = story.get('risk_drivers', [])
         if isinstance(risk_drivers, list):
@@ -215,7 +350,7 @@ class CopilotAgent:
         suggested_action = story.get('suggested_action', {}) if isinstance(story.get('suggested_action'), dict) else {}
         action_txt = f"Action: {suggested_action.get('title', '-')} ({suggested_action.get('description', '')})"
 
-        # 4. Extract Line Items
+        # 5. Extract Line Items
         items_txt = ""
         line_items = payload.get('line_items', [])
         if isinstance(line_items, list) and line_items:
@@ -223,31 +358,24 @@ class CopilotAgent:
                 if isinstance(item, dict):
                     desc = item.get('item_desc') or item.get('description') or 'Item'
                     qty = item.get('quantity', 0)
-                    price = item.get('total_price') or (item.get('unit_price', 0) * int(qty or 0))
+                    try:
+                        price = item.get('total_price') or (item.get('unit_price', 0) * int(qty or 0))
+                    except: price = 0
                     items_txt += f"- {desc} (Qty: {qty}, Total: {price:,.2f})\n"
         else:
             items_txt = "- No items detail found."
 
-        # 5. Extract Audit Logs (Safe Parsing & Sort)
+        # 6. Extract Audit Logs
         audit_txt = ""
         if isinstance(audits, list):
-            # เรียงจาก ใหม่ -> เก่า (Reverse)
             sorted_audits = sorted(audits, key=lambda x: x.get('created_at', ''), reverse=True)
-            
-            for a in sorted_audits[:8]: # 8 รายการล่าสุด
+            for a in sorted_audits[:8]:
                 if not isinstance(a, dict): continue
-
                 action = a.get('action') or a.get('event_type') or 'Unknown Event'
-                
-                # Check Actor Type (Dict or Str)
                 actor_obj = a.get('actor')
-                if isinstance(actor_obj, dict): 
-                    actor = actor_obj.get('name', 'System')
-                elif isinstance(actor_obj, str): 
-                    actor = actor_obj
-                else: 
-                    actor = 'System'
-
+                if isinstance(actor_obj, dict): actor = actor_obj.get('name', 'System')
+                elif isinstance(actor_obj, str): actor = actor_obj
+                else: actor = 'System'
                 timestamp = str(a.get('created_at', ''))[:16].replace('T', ' ')
                 audit_txt += f"- {timestamp}: {action} by {actor}\n"
 
@@ -260,13 +388,18 @@ class CopilotAgent:
         [RISK ANALYSIS]
         {risk_drivers_txt if risk_drivers_txt else "- No critical risk drivers identified."}
         
+        {engine_contract_result}
+
+        [CONTRACT CHECK DETAIL]
+        {contract_report if contract_report else "- No contract data available."}
+
         [SUGGESTED ACTION]
         {action_txt}
 
         [LINE ITEMS]
         {items_txt}
 
-        [LATEST AUDIT LOGS (Newest First)]
+        [LATEST AUDIT LOGS]
         {audit_txt if audit_txt else "- No audit history available."}
         ====================
         """

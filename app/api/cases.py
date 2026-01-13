@@ -166,7 +166,9 @@ def list_cases(
     # ---------------------------------------------------------
     # Sort by Date DESC (Newest First) BEFORE Paging
     # ---------------------------------------------------------
-    filtered.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    #filtered.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    # ป้องกันการระเบิดถ้า created_at ใน DB เป็น Null
+    filtered.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     
     # ---- paging ----
     total = len(filtered)

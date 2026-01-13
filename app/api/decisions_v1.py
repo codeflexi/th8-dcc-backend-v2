@@ -1,4 +1,3 @@
-from curses import raw
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, List, Any
@@ -79,23 +78,9 @@ def get_contract_for_vendor(vendor_name: str) -> Dict:
             return {}
 
         # 2. Load Data
-       
-        raw = json.loads(json_path.read_text(encoding="utf-8"))
-
-        # รองรับทั้งกรณี dict และ list
-        if isinstance(raw, list) and len(raw) > 0:
-            data = raw[0]
-        elif isinstance(raw, dict):
-            data = raw
-        else:
-            print("❌ [DEBUG] Invalid contract DB format")
-            return {}
-
+        data = json.loads(json_path.read_text(encoding="utf-8"))
         contracts = data.get("contracts", {})
-        print(f"✅ [DEBUG] Loaded {len(contracts)} contracts from DB....")
-        print(f"   [DEBUG] Available keys: {list(contracts.keys())}")
-        print(f"   [DEBUG] Available keys: {contracts}")
-
+        
         # 3. Search Vendor (Case Insensitive Match)
         if vendor_name in contracts:
             print(f"✅ [DEBUG] Exact match found for '{vendor_name}'")
@@ -143,6 +128,21 @@ def load_policy_yaml(policy_id: str, version: str) -> Dict:
 
     raise FileNotFoundError(f"Policy not found: {policy_id} v{version}")
 
+# =====================================================
+# ✅ NEW: Helper Fetch Original Metadata (ป้องกัน Error 500/400)
+# =====================================================
+def fetch_existing_metadata(case_id: str) -> Dict:
+    """
+    ดึงข้อมูล Case ตัวเต็มจาก DB เพื่อเอา created_at, domain เดิมมาใช้
+    """
+    try:
+        res = supabase.table("cases").select("case_id, domain, created_at, status").eq("case_id", case_id).maybe_single().execute()
+        if res.data:
+            return res.data
+        return {}
+    except Exception as e:
+        logger.error(f"Failed to fetch metadata for {case_id}: {e}")
+        return {}
 
 # =====================================================
 # Risk Derivation (POLICY-DRIVEN)
@@ -210,26 +210,60 @@ def execute_decision_run(
     policy_version: str,
 ) -> Dict:
 
-    payload = case.get("payload", {})
+    # Initial payload
+    root_payload = case.get("payload", {})
 
     # -------------------------------------------------
-    # 1. Normalize Amount
+    # 🔴 FIX: Recursive Extraction (แก้ปัญหาข้อมูลซ้อนกันแบบเจาะลึก)
     # -------------------------------------------------
-    raw_amount = payload.get("amount_total") or payload.get("amount") or payload.get("total_price") or 0
+    real_payload = root_payload
+    depth = 0
+    # วนลูปเจาะลงไปจนกว่าจะเจอข้อมูลเนื้อในจริงๆ (ที่มี vendor หรือ line_items)
+    # หรือจนกว่าจะลึกเกิน 3 ชั้น
+    while depth < 3:
+        # ถ้าเจอ key ที่บ่งบอกว่าเป็น Business Data ให้หยุดและใช้ตัวนี้เลย
+        if "vendor" in real_payload or "vendor_name" in real_payload or "line_items" in real_payload:
+            break
+            
+        # ถ้ายังไม่เจอ แต่มี key 'payload' ซ้อนอยู่ ให้เจาะลงไป
+        if isinstance(real_payload, dict) and "payload" in real_payload and isinstance(real_payload["payload"], dict):
+            print(f"🔄 [DEBUG] Unwrapping nested 'payload' layer {depth+1}...")
+            real_payload = real_payload["payload"]
+            depth += 1
+        else:
+            break # ทางตัน
+
+    print(f"📦 [DEBUG] Working Data Keys: {list(real_payload.keys())}")
+
+    # 1. Normalize Amount (ใช้ real_payload)
+    raw_amount = real_payload.get("amount_total") or real_payload.get("amount") or real_payload.get("total_price") or 0
     try:
-        amount = float(raw_amount.replace(",", "")) if isinstance(raw_amount, str) else float(raw_amount)
+        amount = float(str(raw_amount).replace(",", ""))
     except:
         amount = 0.0
 
-    payload["amount_total"] = amount
+    # Update กลับไปที่ทุกชั้นเพื่อให้ save กลับ DB ได้ถูกต้อง
+    if isinstance(real_payload, dict):
+        real_payload["amount_total"] = amount
+    if isinstance(root_payload, dict) and root_payload is not real_payload:
+        root_payload["amount_total"] = amount
 
     # -------------------------------------------------
-    # 2. Vendor Enrichment
+    # 2. Vendor Enrichment (Robust Extraction ✅)
     # -------------------------------------------------
-    vendor_raw = payload.get("vendor_name") or payload.get("vendor_id") or payload.get("vendor") or ""
-    vendor_name = str(vendor_raw).lower()
     
-    print(f"\n🔍 [DEBUG] Enriching data for vendor: '{vendor_name}'")
+    # พยายามดึงชื่อ Vendor จากหลายๆ Key ที่เป็นไปได้ จาก real_payload
+    vendor_raw = (
+        real_payload.get("vendor_name") or 
+        real_payload.get("vendor_id") or 
+        real_payload.get("vendor") or       # Key สำคัญใน DB
+        real_payload.get("supplier") or     
+        real_payload.get("partner_name") or 
+        ""
+    )
+    
+    vendor_name = str(vendor_raw).lower().strip()
+    print(f"🔍 [DEBUG] Final Vendor Extracted: '{vendor_raw}' (Normalized: '{vendor_name}')")
 
     vendor_status = "ACTIVE"
     if "bad" in vendor_name or "blacklist" in vendor_name:
@@ -239,24 +273,18 @@ def execute_decision_run(
     if "late" in vendor_name:
         vendor_rating = 55
 
-    # -------------------------------------------------
     # 3. Budget / Fraud Context
-    # -------------------------------------------------
     budget_limit = 1_000_000
     budget_remaining = budget_limit - amount
-
     po_count_24h = 1
-    if "makro" in vendor_name or "lotus" in vendor_name:
-        po_count_24h = 2
-
-    total_spend_24h = amount * po_count_24h
+    total_spend_24h = amount
 
     # -------------------------------------------------
     # 4. Pack Inputs (CANONICAL CONTRACT) ✅
     # -------------------------------------------------
     
     # 🔴 FIX 1: เรียกใช้ฟังก์ชันโหลดสัญญา
-    contract_raw = get_contract_for_vendor(vendor_name) 
+    contract_raw = get_contract_for_vendor(vendor_raw) 
     
     engine_contract_input = {}
     if contract_raw:
@@ -270,23 +298,20 @@ def execute_decision_run(
             "prices": price_map
         }
     else:
-        print(f"⚠️ [DEBUG] No contract found for vendor: '{vendor_name}', passing empty dict to engine.")
-        
-    
-    print(f"🔍 [DEBUG] Contract input for engine: {engine_contract_input}")
+        print(f"⚠️ [DEBUG] No contract found for vendor: '{vendor_raw}', passing empty dict to engine.")
 
     # 🔴 FIX 2: ส่ง contract เข้า inputs
     inputs = {
         "amount_total": amount,
         "amount": amount,
-        "hours_to_sla": payload.get("hours_to_sla", 48),
+        "hours_to_sla": real_payload.get("hours_to_sla", 48),
         "vendor_status": vendor_status,
         "vendor_rating": vendor_rating,
         "budget_remaining": budget_remaining,
         "po_count_24h": po_count_24h,
         "total_spend_24h": total_spend_24h,
         "vendor_name": vendor_raw,
-        "line_items": payload.get("line_items", []),
+        "line_items": real_payload.get("line_items", []),
         
         # ✅ ใส่ข้อมูลสัญญาลงไปให้ Engine ใช้คำนวณ
         "contract": engine_contract_input 
@@ -306,22 +331,13 @@ def execute_decision_run(
     result = DecisionEngine.evaluate(policy=policy, inputs=inputs)
     decision_val = result["recommendation"].get("decision", "REVIEW")
 
-    print(f"\n🧠 [DEBUG] Decision Engine RESULTS: {result}")
-    
-    print(f"\n🧠 [DEBUG] Decision Engine recommended: {result}")
     # -------------------------------------------------
     # 6. Derive Risk Level (POLICY-DRIVEN)
     # -------------------------------------------------
     risk_drivers = collect_risk_drivers(policy, result["rule_results"])
-
     base_risk = derive_risk_from_drivers(risk_drivers)
+    new_risk = apply_threshold_safety_net(base_risk, amount, policy)
 
-    new_risk = apply_threshold_safety_net(
-        base_risk,
-        amount,
-        policy
-    )
-    
     # -------------------------------------------------
     # 7. Audit: Risk Derived
     # -------------------------------------------------
@@ -399,15 +415,9 @@ def execute_decision_run(
             "SYSTEM",
         )
 
-   # -------------------------------------------------
+    # -------------------------------------------------
     # 9. Decision Summary
     # -------------------------------------------------
-    AuditService.write(
-        "DECISION_RECOMMENDED",
-        {"case_id": case["case_id"], "run_id": run_id, "recommendation": result["recommendation"]},
-        "SYSTEM",
-    )
-
     AuditService.write(
         "DECISION_RUN_COMPLETED",
         {
@@ -419,48 +429,67 @@ def execute_decision_run(
         "SYSTEM",
     )
 
-
     # -------------------------------------------------
-    # 🔴 Step 10: Sync back (Correct Structure Only)
+    # 10. Sync back to Case (SYSTEM OF RECORD)
     # -------------------------------------------------
-    # สร้าง Payload ก้อนใหม่ที่รวม Business Data + Results
-    final_payload = payload.copy()
     
-    final_payload.update({
+    # Update ข้อมูลลงใน real_payload และ root_payload (ให้มันซิงค์กัน)
+    updates = {
         "risk_level": new_risk,
         "last_decision": decision_val,
         "evaluated_at": datetime.utcnow().isoformat(),
+        "last_rule_results": result["rule_results"]
+    }
     
-        "last_rule_results": result["rule_results"],
-        "decision_summary": {
-            "risk_level": new_risk,
-            "recommended_action": decision_val,
-            "reason_codes": result["recommendation"].get("reason_codes", []),
-        },
-    })
-    
-   # if "payload" in final_payload: del final_payload["payload"]
+    if isinstance(real_payload, dict):
+        real_payload.update(updates)
+    if isinstance(root_payload, dict) and root_payload is not real_payload:
+        root_payload.update(updates)
 
-    # บันทึกข้อมูลกลับที่ Case Object
-    case["payload"] = final_payload
-    case["status"] = "EVALUATED"
-    case["updated_at"] = datetime.utcnow().isoformat()
-    case["policy_id"] = policy_id
-    case["policy_version"] = policy_version 
-    case["domain"] = case.get("domain") or "procurement"  # Default Domain  
-    case["created_at"] = case.get("created_at") or datetime.utcnow().isoformat()  # Default Created At
+    violated_rules_list = [r["rule_id"] for r in result["rule_results"] if r["hit"]]
     
-    # # ✅ ป้องกัน Metadata หาย (สาเหตุ Error 500)
-    # if not case.get("created_at"): case["created_at"] = datetime.utcnow().isoformat()
-    # if not case.get("domain"): case["domain"] = "procurement"
+    case["decision_summary"] = {
+        "decision_required": decision_val != "APPROVE",
+        "risk_level": new_risk,
+        "recommended_action": decision_val,
+        "violated_rules": violated_rules_list,
+        "reason": f"Risk detected based on {len(risk_drivers)} drivers."
+    }
+
+    case["story"] = {
+        "headline": f"Why this case is {new_risk}",
+        "risk_drivers": [
+            {
+                "label": d["rule_id"], 
+                "detail": d["description"], 
+                "color": "red" if d["impact"] == "CRITICAL" else "orange"
+            } 
+            for d in risk_drivers
+        ],
+        "suggested_action": {
+            "title": decision_val,
+            "description": "System recommendation based on policy logic."
+        }
+    }
+
+    new_status = "EVALUATED"
+    if decision_val == "REJECT": new_status = "EVALUATED"
+    elif decision_val == "APPROVE": new_status = "APPROVED"
+    
+    case["status"] = new_status
+    case["updated_at"] = datetime.utcnow().isoformat()
 
     try:
         repo = SupabaseCaseRepository()
-        repo.save_case(case) # Save ผ่าน Repo เพื่อผ่าน Pentest
+        repo.save_case(case)
     except Exception as e:
         logger.error(f"Sync error: {e}")
 
-    return { "run_id": str(uuid.uuid4()), "rule_results": result["rule_results"], "recommendation": result["recommendation"] }
+    return {
+        "run_id": run_id,
+        "rule_results": result["rule_results"],
+        "recommendation": result["recommendation"],
+    }
 
 # =====================================================
 # Endpoints
@@ -469,21 +498,22 @@ def execute_decision_run(
 @router.post("/run", response_model=RunDecisionResponse)
 def run_decision(req: RunDecisionRequest):
     repo = SupabaseCaseRepository()
-    case = repo.get_case(req.case_id)
-    if not case:
+    
+    # 1. Get Payload from Repo
+    payload_data = repo.get_case(req.case_id)
+    if not payload_data:
         raise HTTPException(status_code=404, detail="CASE_NOT_FOUND")
     
-    # ✅ เรียกผ่าน Repo (ต้องมีฟังก์ชัน get_case_metadata ใน Repo แล้ว)
-    metadata = repo.get_case_metadata(req.case_id)
+    # 2. ✅ Get Real Metadata (from helper) to prevent Null error
+    metadata = fetch_existing_metadata(req.case_id)
 
+    # 3. Assemble Full Case
     full_case = {
         "case_id": req.case_id, 
-        "payload": case.get("payload", {}),
+        "payload": payload_data, 
         "status": metadata.get("status", "NEW"), 
         "domain": metadata.get("domain", "procurement"), 
-        "created_at": metadata.get("created_at"),
-        "policy_id": req.policy_id or metadata.get("payload.policy_id"),
-        "policy_version": req.policy_version or metadata.get("payload.policy_version")
+        "created_at": metadata.get("created_at")
     }
 
     try:
@@ -510,36 +540,35 @@ def run_decision(req: RunDecisionRequest):
 @router.post("/cases/{case_id}/decisions/run")
 def run_decision_by_case(case_id: str):
     repo = SupabaseCaseRepository()
-    case = repo.get_case(case_id)
-    if not case: raise HTTPException(status_code=404, detail="CASE_NOT_FOUND")
+    
+    payload_data = repo.get_case(case_id)
+    if not payload_data:
+        raise HTTPException(status_code=404, detail="CASE_NOT_FOUND")
 
-    # ✅ เรียกผ่าน Repo
-    metadata = repo.get_case_metadata(case_id)
+    # 2. ✅ Get Real Metadata (from helper)
+    metadata = fetch_existing_metadata(case_id)
 
     full_case = {
         "case_id": case_id, 
-        "payload": case.get("payload", {}),
+        "payload": payload_data, 
         "status": metadata.get("status", "NEW"),
         "domain": metadata.get("domain", "procurement"),
-        "created_at": metadata.get("created_at"),
-        "policy_id": metadata.get("payload.policy_id"),
-        "policy_version": metadata.get("payload.policy_version")
+        "created_at": metadata.get("created_at")
     }
 
-    # Use Metadata Policy OR Default
-    pid = metadata.get("payload.policy_id") or "PROCUREMENT-001"
-    pver = metadata.get("payload.policy_version") or "v3.1"
+    policy_id = payload_data.get("policy_id") or "PROCUREMENT-001"
+    policy_version = payload_data.get("policy_version") or "v3.1"
 
     try:
-        policy = load_policy_yaml(pid, pver)
+        policy = load_policy_yaml(policy_id, policy_version)
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail="Policy NOT FOUND")
 
     execution = execute_decision_run(
         case=full_case,
         policy=policy,
-        policy_id=pid,
-        policy_version=pver,
+        policy_id=policy_id,
+        policy_version=policy_version,
     )
 
     return {"status": "ok", "case_id": case_id, "run": execution}

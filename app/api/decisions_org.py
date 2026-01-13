@@ -1,24 +1,20 @@
-from curses import raw
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, List, Any
 import yaml
 import uuid
 import logging
-import json
-import os
 from pathlib import Path
 from datetime import datetime
 
 from app.services.audit_service import AuditService
 from app.services.decision_engine import DecisionEngine
 from app.repositories.supabase_repo import SupabaseCaseRepository
-from app.db.supabase_client import supabase # ✅ เพิ่ม: เพื่อดึงข้อมูล Metadata เก่า
 
 logger = logging.getLogger("decisions_api")
 router = APIRouter(tags=["decisions"])
 
-print("🔥 decisions router loaded (Fixed: Recursive Unwrap + Metadata Fetching)")
+print("🔥 decisions router loaded")
 
 # =====================================================
 # Schemas
@@ -46,84 +42,11 @@ def fmt_num(val: Any) -> str:
     try:
         if val is None:
             return "None"
-        return "{:,.2f}".format(float(str(val).replace(",", "")))
+        return "{:,.2f}".format(float(val))
     except:
         return str(val)
 
-# =====================================================
-# Helper: Load Contract from JSON (Robust Version ✅)
-# =====================================================
-def get_contract_for_vendor(vendor_name: str) -> Dict:
-    print(f"\n🔍 [DEBUG] Start finding contract for vendor: '{vendor_name}'")
-    
-    try:
-        # 1. Resolve Path (หาไฟล์จากหลายๆ ที่ที่เป็นไปได้)
-        current_file = Path(__file__).resolve()
-        backend_root = current_file.parents[2] 
-        
-        possible_paths = [
-            backend_root / "data" / "mock_contracts.json",       
-            backend_root / "app" / "data" / "mock_contracts.json", 
-            Path("data/mock_contracts.json").resolve(),          
-        ]
-        
-        json_path = None
-        for p in possible_paths:
-            if p.exists():
-                json_path = p
-                print(f"✅ [DEBUG] Found DB file at: {json_path}")
-                break
-        
-        if not json_path:
-            print(f"❌ [DEBUG] Contract DB NOT FOUND! Checked: {[str(p) for p in possible_paths]}")
-            return {}
 
-        # 2. Load Data
-       
-        raw = json.loads(json_path.read_text(encoding="utf-8"))
-
-        # รองรับทั้งกรณี dict และ list
-        if isinstance(raw, list) and len(raw) > 0:
-            data = raw[0]
-        elif isinstance(raw, dict):
-            data = raw
-        else:
-            print("❌ [DEBUG] Invalid contract DB format")
-            return {}
-
-        contracts = data.get("contracts", {})
-        print(f"✅ [DEBUG] Loaded {len(contracts)} contracts from DB....")
-        print(f"   [DEBUG] Available keys: {list(contracts.keys())}")
-        print(f"   [DEBUG] Available keys: {contracts}")
-
-        # 3. Search Vendor (Case Insensitive Match)
-        if vendor_name in contracts:
-            print(f"✅ [DEBUG] Exact match found for '{vendor_name}'")
-            return contracts[vendor_name]
-            
-        target_name = str(vendor_name).lower().strip()
-        print(f"   [DEBUG] Trying fuzzy match for '{target_name}'...")
-        
-        for k, v in contracts.items():
-            # Check key
-            if str(k).lower().strip() == target_name:
-                print(f"✅ [DEBUG] Fuzzy Key match found! '{vendor_name}' matches '{k}'")
-                return v
-            # Check inner field
-            if v.get("vendor_name") and str(v.get("vendor_name")).lower().strip() == target_name:
-                print(f"✅ [DEBUG] Inner Field match found! '{vendor_name}' matches data inside '{k}'")
-                return v
-        
-        print(f"⚠️ [DEBUG] Vendor '{vendor_name}' not found. Available keys in DB: {list(contracts.keys())}")
-        return {}
-        
-    except Exception as e:
-        print(f"❌ [DEBUG] Error in get_contract_for_vendor: {e}")
-        return {}
-
-# =====================================================
-# Helper: Load RULE from YAML Policy
-# =====================================================
 def load_policy_yaml(policy_id: str, version: str) -> Dict:
     base_dir = Path(__file__).resolve().parents[2]
     policy_dir = base_dir / "app" / "policies"
@@ -152,7 +75,12 @@ RISK_PRIORITY = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 
 
 def collect_risk_drivers(policy: Dict, rule_results: List[Dict]) -> List[Dict]:
+    """
+    Build list of risk drivers from rules that HIT
+    using risk_impact defined in policy.
+    """
     drivers = []
+
     for r in rule_results:
         if not r.get("hit"):
             continue
@@ -168,32 +96,57 @@ def collect_risk_drivers(policy: Dict, rule_results: List[Dict]) -> List[Dict]:
                 "impact": rule_def["risk_impact"],
                 "description": rule_def.get("description"),
             })
+
     return drivers
 
+
 def derive_risk_from_drivers(drivers: List[Dict]) -> str:
+    """
+    Pick highest priority impact from drivers.
+    """
     if not drivers:
         return "LOW"
+
     impacts = [d["impact"] for d in drivers]
+
     for p in RISK_PRIORITY:
         if p in impacts:
             return p
+
     return "LOW"
 
-def apply_threshold_safety_net(current_risk: str, amount: float, policy: Dict) -> str:
+
+def apply_threshold_safety_net(
+    current_risk: str,
+    amount: float,
+    policy: Dict
+) -> str:
+    """
+    Apply thresholds + safety net from policy.config / policy.thresholds
+    """
     risk = current_risk
+
+    # amount thresholds
     thresholds = policy.get("thresholds", {}).get("amount", {})
     high_th = thresholds.get("high")
     med_th = thresholds.get("medium")
 
     if high_th is not None and amount >= high_th:
         risk = "HIGH"
-    elif med_th is not None and amount >= med_th and risk == "LOW":
-        risk = "MEDIUM"
+    elif med_th is not None and amount >= med_th:
+        if risk == "LOW":
+            risk = "MEDIUM"
 
+    # safety net
     config = policy.get("config", {})
     force_th = config.get("high_risk_threshold")
-    if force_th is not None and amount > float(force_th):
-        risk = config.get("force_risk_level", "HIGH")
+    force_level = config.get("force_risk_level", "HIGH")
+
+    try:
+        if force_th is not None and amount > float(force_th):
+            risk = force_level
+    except:
+        pass
 
     return risk
 
@@ -226,10 +179,8 @@ def execute_decision_run(
     # -------------------------------------------------
     # 2. Vendor Enrichment
     # -------------------------------------------------
-    vendor_raw = payload.get("vendor_name") or payload.get("vendor_id") or payload.get("vendor") or ""
+    vendor_raw = payload.get("vendor_name") or payload.get("vendor_id") or ""
     vendor_name = str(vendor_raw).lower()
-    
-    print(f"\n🔍 [DEBUG] Enriching data for vendor: '{vendor_name}'")
 
     vendor_status = "ACTIVE"
     if "bad" in vendor_name or "blacklist" in vendor_name:
@@ -252,33 +203,11 @@ def execute_decision_run(
     total_spend_24h = amount * po_count_24h
 
     # -------------------------------------------------
-    # 4. Pack Inputs (CANONICAL CONTRACT) ✅
+    # 4. Pack Inputs (CANONICAL CONTRACT)
     # -------------------------------------------------
-    
-    # 🔴 FIX 1: เรียกใช้ฟังก์ชันโหลดสัญญา
-    contract_raw = get_contract_for_vendor(vendor_name) 
-    
-    engine_contract_input = {}
-    if contract_raw:
-        price_map = {
-            item["sku"]: item["agreed_price"] 
-            for item in contract_raw.get("items", {}).values()
-        }
-        engine_contract_input = {
-            "doc_id": contract_raw.get("doc_id"),
-            "is_active": True, 
-            "prices": price_map
-        }
-    else:
-        print(f"⚠️ [DEBUG] No contract found for vendor: '{vendor_name}', passing empty dict to engine.")
-        
-    
-    print(f"🔍 [DEBUG] Contract input for engine: {engine_contract_input}")
-
-    # 🔴 FIX 2: ส่ง contract เข้า inputs
     inputs = {
         "amount_total": amount,
-        "amount": amount,
+        "amount": amount,  # backward compatibility
         "hours_to_sla": payload.get("hours_to_sla", 48),
         "vendor_status": vendor_status,
         "vendor_rating": vendor_rating,
@@ -287,9 +216,6 @@ def execute_decision_run(
         "total_spend_24h": total_spend_24h,
         "vendor_name": vendor_raw,
         "line_items": payload.get("line_items", []),
-        
-        # ✅ ใส่ข้อมูลสัญญาลงไปให้ Engine ใช้คำนวณ
-        "contract": engine_contract_input 
     }
 
     run_id = str(uuid.uuid4())
@@ -304,11 +230,9 @@ def execute_decision_run(
     # 5. Run Decision Engine
     # -------------------------------------------------
     result = DecisionEngine.evaluate(policy=policy, inputs=inputs)
+
     decision_val = result["recommendation"].get("decision", "REVIEW")
 
-    print(f"\n🧠 [DEBUG] Decision Engine RESULTS: {result}")
-    
-    print(f"\n🧠 [DEBUG] Decision Engine recommended: {result}")
     # -------------------------------------------------
     # 6. Derive Risk Level (POLICY-DRIVEN)
     # -------------------------------------------------
@@ -321,7 +245,7 @@ def execute_decision_run(
         amount,
         policy
     )
-    
+
     # -------------------------------------------------
     # 7. Audit: Risk Derived
     # -------------------------------------------------
@@ -361,7 +285,9 @@ def execute_decision_run(
                         "expected": c.get("value"),
                         "actual": inputs.get(c.get("field")),
                     })
-       
+
+        rr["matched"] = conditions_to_check
+
         for m in conditions_to_check:
             field = m.get("field")
             operator = m.get("operator")
@@ -371,8 +297,19 @@ def execute_decision_run(
             act_str = fmt_num(actual)
             exp_str = fmt_num(expected)
 
-            # ✅ FIX: เชื่อผลลัพธ์ (hit) ที่ Decision Engine ส่งมาเลย (Optimized)
-            is_true = rr["hit"]
+            is_true = False
+            try:
+                a = float(actual)
+                b = float(expected)
+                if operator == ">": is_true = a > b
+                elif operator == "<": is_true = a < b
+                elif operator == ">=": is_true = a >= b
+                elif operator == "<=": is_true = a <= b
+                elif operator == "==": is_true = a == b
+                elif operator == "!=": is_true = a != b
+            except:
+                if operator == "==": is_true = str(actual) == str(expected)
+                elif operator == "!=": is_true = str(actual) != str(expected)
 
             if is_true:
                 msg = f"⚠️ Risk Detected ({act_str} {operator} {exp_str})"
@@ -380,7 +317,7 @@ def execute_decision_run(
                 msg = f"✅ Pass ({act_str} does NOT satisfy {operator} {exp_str})"
 
             eval_logic[field] = f"{act_str} (Rule: {operator} {exp_str}) -> {msg}"
-            
+
         if not eval_logic:
             eval_logic["Result"] = "Criteria Met" if rr["hit"] else "Passed"
 
@@ -399,7 +336,7 @@ def execute_decision_run(
             "SYSTEM",
         )
 
-   # -------------------------------------------------
+    # -------------------------------------------------
     # 9. Decision Summary
     # -------------------------------------------------
     AuditService.write(
@@ -419,48 +356,34 @@ def execute_decision_run(
         "SYSTEM",
     )
 
-
     # -------------------------------------------------
-    # 🔴 Step 10: Sync back (Correct Structure Only)
+    # 10. Sync back to Case (SYSTEM OF RECORD)
     # -------------------------------------------------
-    # สร้าง Payload ก้อนใหม่ที่รวม Business Data + Results
-    final_payload = payload.copy()
-    
-    final_payload.update({
-        "risk_level": new_risk,
-        "last_decision": decision_val,
-        "evaluated_at": datetime.utcnow().isoformat(),
-    
-        "last_rule_results": result["rule_results"],
-        "decision_summary": {
-            "risk_level": new_risk,
-            "recommended_action": decision_val,
-            "reason_codes": result["recommendation"].get("reason_codes", []),
-        },
-    })
-    
-   # if "payload" in final_payload: del final_payload["payload"]
+    payload["risk_level"] = new_risk
+    payload["last_decision"] = decision_val
+    payload["evaluated_at"] = datetime.utcnow().isoformat()
+    payload["last_rule_results"] = result["rule_results"]
 
-    # บันทึกข้อมูลกลับที่ Case Object
-    case["payload"] = final_payload
-    case["status"] = "EVALUATED"
-    case["updated_at"] = datetime.utcnow().isoformat()
-    case["policy_id"] = policy_id
-    case["policy_version"] = policy_version 
-    case["domain"] = case.get("domain") or "procurement"  # Default Domain  
-    case["created_at"] = case.get("created_at") or datetime.utcnow().isoformat()  # Default Created At
-    
-    # # ✅ ป้องกัน Metadata หาย (สาเหตุ Error 500)
-    # if not case.get("created_at"): case["created_at"] = datetime.utcnow().isoformat()
-    # if not case.get("domain"): case["domain"] = "procurement"
+    new_status = "EVALUATED"
+    if decision_val == "REJECT":
+        new_status = "REJECTED"
+    elif decision_val == "APPROVE":
+        new_status = "APPROVED"
 
     try:
         repo = SupabaseCaseRepository()
-        repo.save_case(case) # Save ผ่าน Repo เพื่อผ่าน Pentest
+        case["status"] = new_status
+        case["updated_at"] = datetime.utcnow().isoformat()
+        repo.save_case(case)
     except Exception as e:
         logger.error(f"Sync error: {e}")
 
-    return { "run_id": str(uuid.uuid4()), "rule_results": result["rule_results"], "recommendation": result["recommendation"] }
+    return {
+        "run_id": run_id,
+        "rule_results": result["rule_results"],
+        "recommendation": result["recommendation"],
+    }
+
 
 # =====================================================
 # Endpoints
@@ -472,19 +395,6 @@ def run_decision(req: RunDecisionRequest):
     case = repo.get_case(req.case_id)
     if not case:
         raise HTTPException(status_code=404, detail="CASE_NOT_FOUND")
-    
-    # ✅ เรียกผ่าน Repo (ต้องมีฟังก์ชัน get_case_metadata ใน Repo แล้ว)
-    metadata = repo.get_case_metadata(req.case_id)
-
-    full_case = {
-        "case_id": req.case_id, 
-        "payload": case.get("payload", {}),
-        "status": metadata.get("status", "NEW"), 
-        "domain": metadata.get("domain", "procurement"), 
-        "created_at": metadata.get("created_at"),
-        "policy_id": req.policy_id or metadata.get("payload.policy_id"),
-        "policy_version": req.policy_version or metadata.get("payload.policy_version")
-    }
 
     try:
         policy = load_policy_yaml(req.policy_id, req.policy_version)
@@ -492,7 +402,7 @@ def run_decision(req: RunDecisionRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
     execution = execute_decision_run(
-        case=full_case,
+        case=case,
         policy=policy,
         policy_id=req.policy_id,
         policy_version=req.policy_version,
@@ -511,35 +421,26 @@ def run_decision(req: RunDecisionRequest):
 def run_decision_by_case(case_id: str):
     repo = SupabaseCaseRepository()
     case = repo.get_case(case_id)
-    if not case: raise HTTPException(status_code=404, detail="CASE_NOT_FOUND")
+    if not case:
+        raise HTTPException(status_code=404, detail="CASE_NOT_FOUND")
 
-    # ✅ เรียกผ่าน Repo
-    metadata = repo.get_case_metadata(case_id)
+    policy_id = case.get("policy_id") or "PROCUREMENT-001"
+    policy_version = case.get("policy_version") or "v3.1"
 
-    full_case = {
-        "case_id": case_id, 
-        "payload": case.get("payload", {}),
-        "status": metadata.get("status", "NEW"),
-        "domain": metadata.get("domain", "procurement"),
-        "created_at": metadata.get("created_at"),
-        "policy_id": metadata.get("payload.policy_id"),
-        "policy_version": metadata.get("payload.policy_version")
-    }
-
-    # Use Metadata Policy OR Default
-    pid = metadata.get("payload.policy_id") or "PROCUREMENT-001"
-    pver = metadata.get("payload.policy_version") or "v3.1"
+    case["policy_id"] = policy_id
+    case["policy_version"] = policy_version
+    repo.save_case(case)
 
     try:
-        policy = load_policy_yaml(pid, pver)
+        policy = load_policy_yaml(policy_id, policy_version)
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail="Policy NOT FOUND")
 
     execution = execute_decision_run(
-        case=full_case,
+        case=case,
         policy=policy,
-        policy_id=pid,
-        policy_version=pver,
+        policy_id=policy_id,
+        policy_version=policy_version,
     )
 
     return {"status": "ok", "case_id": case_id, "run": execution}
