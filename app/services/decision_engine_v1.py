@@ -139,130 +139,103 @@ class EvaluateContractNode(Node):
         policy = ctx["policy"]
         inputs = ctx["inputs"]
         
-        # 1. Config
+        # 1. ดึง Config จาก YAML
         contract_config = policy.get("contract_compliance", {})
         max_variance = contract_config.get("max_allowed_variance_pct", 0.0)
         
-        # 2. Data Preparation
+        # 2. ดึงข้อมูล Contract ที่เตรียมมา (จากการ RAG/DB)
+        # inputs['contract'] ควรหน้าตาประมาณ:
+        # { 'is_active': True, 'prices': {'SKU-001': 100.00}, 'doc_id': '...' }
         contract_data = inputs.get("contract")
         line_items = inputs.get("line_items", [])
 
+        print("🔍 Evaluating Print Input...")
+        print(f"   - Inputs: {inputs}" )
+        print(f"🔍 Evaluating Contract Compliance: config={contract_config}, contract_data={contract_data}, line_items={line_items}")
+      
+      
         # -----------------------------------------
-        # Check 3: No Contract Reference (Rule 9)
+        # Check 3: No Contract Reference (Rule 9) 🆕
         # -----------------------------------------
+        # ถ้าไม่มีข้อมูลสัญญา หรือไม่มี Doc ID -> ถือว่าหาไม่เจอ
         if not contract_data or not contract_data.get("doc_id"):
             ctx["rule_results"].append({
                 "rule_id": "NO_CONTRACT_REFERENCE",
                 "description": "Item purchased without active contract reference",
                 "hit": True,
-                "severity": "HIGH", # 🔴 เพิ่ม Severity
                 "matched": [{
                     "field": "contract_id",
                     "operator": "exists",
                     "expected": "Valid Contract",
                     "actual": "None/Missing"
-                }],
-                # 📸 Snapshot: บันทึกว่าตอนนั้น Vendor คือใคร
-                "inputs_snapshot": {
-                    "vendor_id": inputs.get("vendor_id"),
-                    "po_items_count": len(line_items)
-                }
+                }]
             })
             ctx["_hit_rules"].append("NO_CONTRACT_REFERENCE")
+            
+            # ถ้าไม่มีสัญญา ก็ไม่ต้องเช็ควันหมดอายุหรือราคาต่อ -> จบ Node เลย
             return ctx
         
-        # เก็บ Doc ID ไว้ใช้ซ้ำ
-        doc_id = contract_data.get("doc_id")
         
-
         # -----------------------------------------
-        # Check 1: Contract Validity
+        # Check 1: Contract Validity (วันหมดอายุ)
         # -----------------------------------------
         if contract_config.get("validity_check") and not contract_data.get("is_active", True):
+            # สร้าง Result แบบเดียวกับ Rule ปกติ
             ctx["rule_results"].append({
                 "rule_id": "CONTRACT_EXPIRED",
-                "description": f"Contract {doc_id} is expired or inactive",
+                "description": "Contract is expired or inactive",
                 "hit": True,
-                "severity": "CRITICAL", # 🔴
-                "doc_reference": doc_id, # ✅ ระบุเอกสารที่ผิด
                 "matched": [{
                     "field": "contract_status",
                     "operator": "is_active",
                     "expected": "ACTIVE",
                     "actual": "EXPIRED/INACTIVE"
-                }],
-                # 📸 Snapshot: วันที่หมดอายุ vs วันที่สั่งซื้อ
-                "inputs_snapshot": {
-                    "doc_id": doc_id,
-                    "contract_end_date": contract_data.get("end_date"),
-                    "po_date": inputs.get("created_at")
-                }
+                }]
             })
             ctx["_hit_rules"].append("CONTRACT_EXPIRED")
 
         # -----------------------------------------
-        # Check 2: Price Variance (หัวใจสำคัญ)
+        # Check 2: Price Variance (รายสินค้า)
         # -----------------------------------------
         if contract_config.get("price_check"):
             variance_hits = []
-            snapshot_items = {} # เก็บข้อมูลดิบรายตัว
-           
             
             for item in line_items:
                 sku = item.get("sku")
                 po_price = float(item.get("unit_price", 0))
-                
-               
-                # สมมติ contract_data['prices'] เก็บราคามาตรฐานไว้
                 contract_price = contract_data.get("prices", {}).get(sku)
 
+                # ถ้าเจอราคาสัญญา
                 if contract_price is not None and contract_price > 0:
                     contract_price = float(contract_price)
                     diff = po_price - contract_price
                     diff_percent = (diff / contract_price) * 100
 
-                    # ถ้าราคาสูงเกินเกณฑ์
+                    # ถ้าราคาแพงกว่าเกณฑ์ที่กำหนด (เช่น 5%)
                     if diff_percent > max_variance:
-                        # 1. สร้างรายการที่ Match ผิดปกติ (สำหรับแสดงผลย่อๆ)
                         variance_hits.append({
                             "field": f"price_{sku}",
-                            "operator": f"variance <= {max_variance}%",
+                            "operator": f"< {max_variance}% variance",
                             "expected": contract_price,
-                            "actual": po_price,
-                            "variance_pct": round(diff_percent, 2),
-                            "note": f"(>{round(diff_percent, 2)}%)"
+                            "actual": f"{po_price} (+{diff_percent:.2f}%)"
                         })
 
-                        # 2. เก็บ Snapshot รายตัว (สำคัญมากสำหรับ Audit/Copilot)
-                        # เพื่อให้ Copilot ตอบได้ว่า "SKU A ราคา 120 (Contract 100)"
-                        snapshot_items[sku] = {
-                            "po_price": po_price,
-                            "contract_price": contract_price,
-                            "currency": item.get("currency", "THB"),
-                            "clause_ref": contract_data.get("clause_map", {}).get(sku), # (ถ้ามี),
-                            
-                            #"clause_ref": contract_data.get("clause_map", {}).get(sku) # (ถ้ามี)
-                        }
-
+            # ถ้ามีสินค้าตัวไหนผิดเงื่อนไขแม้แต่ตัวเดียว -> Trigger Rule
             if variance_hits:
                 ctx["rule_results"].append({
                     "rule_id": "CONTRACT_PRICE_VARIANCE",
-                    "doc_reference": doc_id,
+                    "doc_reference": contract_data.get("doc_id"), # ✅ ฝัง ID สัญญาลงไปเลย
                     "description": f"Items Unit price exceeds contract agreement by > {max_variance}%",
                     "hit": True,
-                    "severity": "CRITICAL", # 🔴
-                    "matched": variance_hits,
+                    "matched": variance_hits # ส่งรายการที่ผิดปกติออกไปให้ UI/Copilot ดู
                     
-                    # 📸 Snapshot: รวมข้อมูลทั้งหมดที่ใช้ตัดสินใจใน Rule นี้
-                    "inputs_snapshot": {
-                        "doc_id": doc_id,
-                        "max_variance_allowed": max_variance,
-                        "failed_items": snapshot_items # <-- ใส่ข้อมูลละเอียดที่นี่
-                    }
+                    
                 })
                 ctx["_hit_rules"].append("CONTRACT_PRICE_VARIANCE")
 
         return ctx
+
+
 
 
 # ============================================================

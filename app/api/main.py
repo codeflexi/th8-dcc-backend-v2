@@ -42,6 +42,11 @@ def create_app() -> FastAPI:
     # -------------------------------------------------
     @app.on_event("startup")
     
+    def init_repositories(app: FastAPI):
+        app.state.audit_repo = SupabaseAuditRepository()
+        app.state.case_repo = SupabaseCaseRepository()
+    
+    
     def startup_load_demo_data():
         # 1) init audit repo (ต้องมีเสมอ)
         app.state.audit_repo = SupabaseAuditRepository()

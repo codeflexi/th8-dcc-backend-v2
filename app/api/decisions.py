@@ -92,9 +92,7 @@ def get_contract_for_vendor(vendor_name: str) -> Dict:
             return {}
 
         contracts = data.get("contracts", {})
-        print(f"✅ [DEBUG] Loaded {len(contracts)} contracts from DB....")
-        print(f"   [DEBUG] Available keys: {list(contracts.keys())}")
-        print(f"   [DEBUG] Available keys: {contracts}")
+        
 
         # 3. Search Vendor (Case Insensitive Match)
         if vendor_name in contracts:
@@ -107,14 +105,14 @@ def get_contract_for_vendor(vendor_name: str) -> Dict:
         for k, v in contracts.items():
             # Check key
             if str(k).lower().strip() == target_name:
-                print(f"✅ [DEBUG] Fuzzy Key match found! '{vendor_name}' matches '{k}'")
+            
                 return v
             # Check inner field
             if v.get("vendor_name") and str(v.get("vendor_name")).lower().strip() == target_name:
-                print(f"✅ [DEBUG] Inner Field match found! '{vendor_name}' matches data inside '{k}'")
+               
                 return v
         
-        print(f"⚠️ [DEBUG] Vendor '{vendor_name}' not found. Available keys in DB: {list(contracts.keys())}")
+        
         return {}
         
     except Exception as e:
@@ -229,7 +227,7 @@ def execute_decision_run(
     vendor_raw = payload.get("vendor_name") or payload.get("vendor_id") or payload.get("vendor") or ""
     vendor_name = str(vendor_raw).lower()
     
-    print(f"\n🔍 [DEBUG] Enriching data for vendor: '{vendor_name}'")
+    
 
     vendor_status = "ACTIVE"
     if "bad" in vendor_name or "blacklist" in vendor_name:
@@ -306,9 +304,7 @@ def execute_decision_run(
     result = DecisionEngine.evaluate(policy=policy, inputs=inputs)
     decision_val = result["recommendation"].get("decision", "REVIEW")
 
-    print(f"\n🧠 [DEBUG] Decision Engine RESULTS: {result}")
-    
-    print(f"\n🧠 [DEBUG] Decision Engine recommended: {result}")
+   
     # -------------------------------------------------
     # 6. Derive Risk Level (POLICY-DRIVEN)
     # -------------------------------------------------
@@ -321,6 +317,7 @@ def execute_decision_run(
         amount,
         policy
     )
+    print(f"\n🧠 [DEBUG] Decision Engine RESULTS: {new_risk}")
     
     # -------------------------------------------------
     # 7. Audit: Risk Derived

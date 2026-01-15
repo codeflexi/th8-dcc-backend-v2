@@ -179,23 +179,40 @@ def derive_risk_from_drivers(drivers: List[Dict]) -> str:
             return p
     return "LOW"
 
-def apply_threshold_safety_net(current_risk: str, amount: float, policy: Dict) -> str:
+def apply_threshold_safety_net(
+    current_risk: str,
+    amount: float,
+    policy: Dict
+) -> str:
+    """
+    Apply thresholds + safety net from policy.config / policy.thresholds
+    """
     risk = current_risk
+
+    # amount thresholds
     thresholds = policy.get("thresholds", {}).get("amount", {})
     high_th = thresholds.get("high")
     med_th = thresholds.get("medium")
 
     if high_th is not None and amount >= high_th:
         risk = "HIGH"
-    elif med_th is not None and amount >= med_th and risk == "LOW":
-        risk = "MEDIUM"
+    elif med_th is not None and amount >= med_th:
+        if risk == "LOW":
+            risk = "MEDIUM"
 
+    # safety net
     config = policy.get("config", {})
     force_th = config.get("high_risk_threshold")
-    if force_th is not None and amount > float(force_th):
-        risk = config.get("force_risk_level", "HIGH")
+    force_level = config.get("force_risk_level", "HIGH")
+
+    try:
+        if force_th is not None and amount > float(force_th):
+            risk = force_level
+    except:
+        pass
 
     return risk
+
 
 
 # =====================================================

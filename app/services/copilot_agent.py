@@ -68,6 +68,8 @@ class CopilotAgent:
         case_data = await self.repo.get_case(case_id)
         audit_logs = await self.repo.get_audit_logs(case_id)
         
+        
+        
         if not case_data:
             yield self._format_event("trace", {
                 "step_id": 1, "title": "Context Error", 
