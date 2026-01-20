@@ -6,7 +6,8 @@ from app.api.cases import router as cases_router
 from app.api.audit import router as audit_router
 from app.api.decisions import router as decisions_router
 from app.api.evidence import router as evidence_router
-from app.api.copilot import router as copilot_router
+# from app.api.copilot import router as copilot_router
+from app.api.copilot_rag import router as copilot_router
 
 api_router = APIRouter()
 

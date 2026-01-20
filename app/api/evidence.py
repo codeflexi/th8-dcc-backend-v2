@@ -5,6 +5,14 @@ from openai import OpenAI
 
 from app.services.evidence_retriever import EvidenceRetriever
 from app.services.audit_service import AuditService
+from app.services.copilot_agent import CopilotAgent
+
+
+
+from fastapi.responses import StreamingResponse
+
+
+router = APIRouter(tags=["copilot"])
 
 
 # ======================
@@ -144,3 +152,17 @@ def attach_evidence(req: EvidenceAttachRequest):
         "case_id": req.case_id,
         "evidence_count": len(req.evidence),
     }
+
+
+class ChatRequest(BaseModel):
+    query: str
+    case_id: str
+
+@router.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    agent = CopilotAgent()
+    
+    return StreamingResponse(
+        agent.run_workflow(req.query, req.case_id),
+        media_type="application/x-ndjson" # Newline Delimited JSON
+    )

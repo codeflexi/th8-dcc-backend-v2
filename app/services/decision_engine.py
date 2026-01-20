@@ -42,6 +42,8 @@ class EvaluateRulesNode(Node):
         hit_rules: List[str] = []
 
         for rule in policy.get("rules", []):
+            if rule.get("is_active") is False:
+                continue
             if rule.get("type") in ["llm_semantic_check", "contract_check"]:
                 continue
 
@@ -145,6 +147,8 @@ class EvaluateContractNode(Node):
         
         # 2. Data Preparation
         contract_data = inputs.get("contract")
+        
+        
         line_items = inputs.get("line_items", [])
 
         # -----------------------------------------
@@ -214,7 +218,13 @@ class EvaluateContractNode(Node):
                 
                
                 # สมมติ contract_data['prices'] เก็บราคามาตรฐานไว้
-                contract_price = contract_data.get("prices", {}).get(sku)
+                item_data = contract_data["contract_items"].get(sku)
+                
+            if item_data :
+                contract_price = item_data.get("price") if item_data else None # ดึงราคาจากสัญญา
+                # page_num = item_data["evidence"]["page"]
+                # score = item_data["evidence"]["score"]
+                
 
                 if contract_price is not None and contract_price > 0:
                     contract_price = float(contract_price)
@@ -226,7 +236,7 @@ class EvaluateContractNode(Node):
                         # 1. สร้างรายการที่ Match ผิดปกติ (สำหรับแสดงผลย่อๆ)
                         variance_hits.append({
                             "field": f"price_{sku}",
-                            "operator": f"variance <= {max_variance}%",
+                            "operator": f"variance > {max_variance}%",
                             "expected": contract_price,
                             "actual": po_price,
                             "variance_pct": round(diff_percent, 2),
@@ -239,7 +249,7 @@ class EvaluateContractNode(Node):
                             "po_price": po_price,
                             "contract_price": contract_price,
                             "currency": item.get("currency", "THB"),
-                            "clause_ref": contract_data.get("clause_map", {}).get(sku), # (ถ้ามี),
+                            "evidence_meta": item_data.get("evidence", {}) # (ถ้ามี),
                             
                             #"clause_ref": contract_data.get("clause_map", {}).get(sku) # (ถ้ามี)
                         }

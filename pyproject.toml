@@ -9,6 +9,9 @@ dependencies = [
   "pydantic",
   "pydantic-settings",
   "python-dotenv",
+  "boto3>=1.42.29",
+  "tiktoken>=0.12.0",
+  "httpx>=0.28.1",
 ]
 
 [project.scripts]

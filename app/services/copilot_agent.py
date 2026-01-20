@@ -6,14 +6,17 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 # ✅ Use the new Async/API-based Repository
-from app.repositories.copilot_repo import CopilotRepository
+from app.repositories.copilot_repo import CopilotRepositoryAgent
+
+
+
 
 load_dotenv()
 
 class CopilotAgent:
     def __init__(self):
         # 1. Init Repository
-        self.repo = CopilotRepository()
+        self.repo = CopilotRepositoryAgent()
         
         # 2. Init OpenAI Client
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -85,7 +88,7 @@ class CopilotAgent:
              payload = case_data['payload']
         if not isinstance(payload, dict): payload = {}
 
-        vendor_name = case_data.get('vendor_id') or payload.get('vendor_name') or payload.get('vendor') or "story 1" # Fallback
+        vendor_name = case_data.get('vendor_id') or payload.get('vendor_name') or payload.get('vendor')
         line_items = payload.get('line_items', [])
 
         # --- STEP 2: Contract & Price Analysis (Logic Rule) ---
@@ -225,6 +228,11 @@ class CopilotAgent:
         Analyzes price variance against mock contracts.
         Returns report text and list of evidences.
         """
+        if not vendor_name or not isinstance(vendor_name, str):
+         return {
+            "report_text": "- Vendor not specified or invalid in case payload",
+            "evidences": []
+        }
         contracts_db = self.mock_contracts.get("contracts", {})
         
         # 1. Improved Vendor Matching Logic (Case Insensitive)

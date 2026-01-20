@@ -57,6 +57,7 @@ rules:
   # 1. High Amount Control
   # -------------------------------------------------
   - id: HIGH_AMOUNT_ESCALATION
+    is_active: true
     description: "High value procurement (>200k) must be escalated"
     risk_impact: HIGH
     when:
@@ -70,6 +71,7 @@ rules:
   # 2. SLA Risk
   # -------------------------------------------------
   - id: SLA_RISK
+    is_active: true
     description: "Urgent procurement (close to SLA deadline)"
     risk_impact: MEDIUM
     when:
@@ -83,6 +85,7 @@ rules:
   # 3. Vendor Risk
   # -------------------------------------------------
   - id: VENDOR_BLACKLIST_CHECK
+    is_active: false
     description: "Critical: Vendor is flagged as BLACKLISTED"
     risk_impact: CRITICAL
     when:
@@ -93,6 +96,7 @@ rules:
       decision: REJECT
 
   - id: VENDOR_RATING_LOW
+    is_active: true
     description: "Warning: Vendor performance rating is below standard (Score < 60)"
     risk_impact: MEDIUM
     when:
@@ -106,6 +110,7 @@ rules:
   # 4. Budget Control
   # -------------------------------------------------
   - id: BUDGET_INSUFFICIENT
+    is_active: true
     description: "Purchase amount exceeds remaining department budget"
     risk_impact: CRITICAL
     when:
@@ -119,6 +124,7 @@ rules:
   # 5. Fraud Risk — Split PO
   # -------------------------------------------------
   - id: POTENTIAL_SPLIT_PO
+    is_active: true
     description: "Fraud Risk: Potential Split PO detected (Multiple orders < 24h)"
     risk_impact: HIGH
     when:
@@ -135,6 +141,7 @@ rules:
   # 6. AI Semantic Risk
   # -------------------------------------------------
   - id: VENDOR_CATEGORY_MISMATCH
+    is_active: true
     type: llm_semantic_check
     description: "Check if items match vendor business category"
     risk_impact: MEDIUM
@@ -147,6 +154,7 @@ rules:
   # 7. Contract Validity
   # -------------------------------------------------
   - id: CONTRACT_EXPIRED
+    is_active: true
     type: contract_check  # <--- เติมบรรทัดนี้ ✅
     description: "Purchase order referencing an expired contract"
     risk_impact: CRITICAL
@@ -157,6 +165,7 @@ rules:
   # 8. Price Variance
   # -------------------------------------------------
   - id: CONTRACT_PRICE_VARIANCE
+    is_active: true
     type: contract_check  # <--- เติมบรรทัดนี้ ✅
     description: "Unit price exceeds contract agreement (> 3%)"
     risk_impact: HIGH
@@ -167,6 +176,7 @@ rules:
   # 9. No Contract Reference
   # -------------------------------------------------
   - id: NO_CONTRACT_REFERENCE
+    is_active: true
     type: contract_check  # <--- เติมบรรทัดนี้ ✅
     description: "Item purchased without active contract reference"
     risk_impact: LOW 

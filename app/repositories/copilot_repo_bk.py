@@ -9,7 +9,7 @@ from app.db.supabase_client import supabase
 
 load_dotenv()
 
-class CopilotRepositoryAgent(CaseRepository):
+class CopilotRepository(CaseRepository):
     """
     Hybrid Repository for AI Copilot:
     - Uses Async HTTP Client to fetch enriched data from internal API (avoiding deadlocks).

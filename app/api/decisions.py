@@ -254,22 +254,49 @@ def execute_decision_run(
     # -------------------------------------------------
     
     # 🔴 FIX 1: เรียกใช้ฟังก์ชันโหลดสัญญา
-    contract_raw = get_contract_for_vendor(vendor_name) 
+    # contract_raw = get_contract_for_vendor(vendor_name) 
+    
+    # engine_contract_input = {}
+    # if contract_raw:
+    #     price_map = {
+    #         item["sku"]: item["agreed_price"] 
+    #         for item in contract_raw.get("items", {}).values()
+    #     }
+    #     engine_contract_input = {
+    #         "doc_id": contract_raw.get("doc_id"),
+    #         "is_active": True, 
+    #         "prices": price_map
+    #     } 
+    # else:
+    #     print(f"⚠️ [DEBUG] No contract found for vendor: '{vendor_name}', passing empty dict to engine.")
+        
+    
+    contract_raw = get_contract_for_vendor(vendor_name)
     
     engine_contract_input = {}
+    
     if contract_raw:
-        price_map = {
-            item["sku"]: item["agreed_price"] 
+        # สร้าง Dictionary ที่เก็บข้อมูลครบทั้ง Price และ Evidence
+        # โดยใช้ SKU เป็น Key หลักเหมือนเดิม
+        full_items_map = {
+            item["sku"]: {
+                "price": item["agreed_price"],        # เก็บราคา
+                "evidence": item.get("evidence_meta", {}) # เก็บ evidence_meta (ถ้าไม่มีใส่ dict ว่าง)
+            } 
             for item in contract_raw.get("items", {}).values()
         }
+
         engine_contract_input = {
             "doc_id": contract_raw.get("doc_id"),
-            "is_active": True, 
-            "prices": price_map
+            "is_active": True,
+            # เปลี่ยนชื่อ key จาก "prices" เป็น "contract_items" ให้สื่อความหมายขึ้น
+            # (หรือจะใช้ชื่อ prices เหมือนเดิมก็ได้ แต่อาจจะงงเพราะข้างในไม่ใช่แค่ตัวเลขแล้ว)
+            "contract_items": full_items_map 
         }
-    else:
-        print(f"⚠️ [DEBUG] No contract found for vendor: '{vendor_name}', passing empty dict to engine.")
         
+    else:
+        print(f"⚠️ [DEBUG] No contract found for vendor: '{vendor_name}'")
+    
     
     print(f"🔍 [DEBUG] Contract input for engine: {engine_contract_input}")
 
@@ -287,7 +314,7 @@ def execute_decision_run(
         "line_items": payload.get("line_items", []),
         
         # ✅ ใส่ข้อมูลสัญญาลงไปให้ Engine ใช้คำนวณ
-        "contract": engine_contract_input 
+        "contract": engine_contract_input
     }
 
     run_id = str(uuid.uuid4())
