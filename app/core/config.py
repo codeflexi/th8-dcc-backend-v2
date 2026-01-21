@@ -34,6 +34,8 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
     API_BASE_URL: str = "http://127.0.0.1:8000/api"
-
+    # LlamaCloud (สำหรับ LlamaParse) ✅ เพิ่มตรงนี้
+    LLAMA_CLOUD_API_KEY: str
+ 
 
 settings = Settings()
